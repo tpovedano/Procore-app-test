@@ -1,0 +1,17 @@
+/** GET /api/config → configuración pública (sin secretos) para el frontend. */
+import { ConfigError, getConfig, isDryRun } from './_lib/env';
+import { json, preflight } from './_lib/http';
+
+export function GET(request: Request): Response {
+  try {
+    const cfg = getConfig(process.env, !isDryRun());
+    return json(request, 200, { dryRun: cfg.dryRun, webBaseUrl: cfg.webBaseUrl, environment: cfg.environment });
+  } catch (e) {
+    const message = e instanceof ConfigError ? e.message : 'Configuración del servidor inválida.';
+    return json(request, 500, { error: message });
+  }
+}
+
+export function OPTIONS(request: Request): Response {
+  return preflight(request);
+}
