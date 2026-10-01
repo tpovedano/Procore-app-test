@@ -7,7 +7,15 @@ describe('catálogo', () => {
   it('el src/catalog.json del repo es válido (v3)', () => {
     const c = parseCatalog(realCatalog);
     expect(c.version).toBe(3);
-    expect(c.domains.length).toBeGreaterThan(0);
+    expect(c.domains.map((d) => d.label)).toEqual(['Agua', 'Residuos', 'Suelos', 'Energía y emisiones']);
+    expect(c.domains.flatMap((d) => d.elements)).toHaveLength(10);
+  });
+
+  it('el dominio usa "name" (y acepta "label" por compatibilidad)', () => {
+    const el = { id: 'x', label: 'X', unit: null, valueType: 'text' };
+    expect(parseCatalog({ version: 3, domains: [{ id: 'a', name: 'Agua', elements: [el] }] }).domains[0]!.label).toBe('Agua');
+    expect(parseCatalog({ version: 3, domains: [{ id: 'a', label: 'Agua', elements: [el] }] }).domains[0]!.label).toBe('Agua');
+    expect(() => parseCatalog({ version: 3, domains: [{ id: 'a', elements: [el] }] })).toThrow(CatalogError);
   });
 
   it('rechaza versiones distintas de 3, tipos inválidos e ids duplicados', () => {

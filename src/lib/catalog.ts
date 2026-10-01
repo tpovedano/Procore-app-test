@@ -1,7 +1,7 @@
 /**
  * Catálogo de elementos (src/catalog.json, versión 3).
- * Jerarquía: domains → elements. El dominio es un agrupador visual y equivale
- * a una SECCIÓN de la inspección.
+ * Jerarquía: domains → elements. El dominio (id, name) es un agrupador visual y
+ * equivale a una SECCIÓN de la inspección.
  */
 
 export type ValueType = 'number' | 'text';
@@ -42,7 +42,9 @@ export function parseCatalog(raw: unknown): Catalog {
   const seenDomainIds = new Set<string>();
 
   const domains = raw.domains.map((d, di): CatalogDomain => {
-    if (!isRecord(d) || typeof d.id !== 'string' || typeof d.label !== 'string' || !Array.isArray(d.elements)) {
+    // El catálogo v3 nombra el dominio con "name"; se acepta "label" por compatibilidad.
+    const domainLabel = isRecord(d) ? (typeof d.name === 'string' ? d.name : d.label) : undefined;
+    if (!isRecord(d) || typeof d.id !== 'string' || typeof domainLabel !== 'string' || !Array.isArray(d.elements)) {
       throw new CatalogError(`Dominio inválido en la posición ${di}.`);
     }
     if (seenDomainIds.has(d.id)) throw new CatalogError(`Id de dominio duplicado: ${d.id}`);
@@ -64,7 +66,7 @@ export function parseCatalog(raw: unknown): Catalog {
       return { id: e.id, label: e.label.trim(), unit, valueType: e.valueType };
     });
 
-    return { id: d.id, label: d.label.trim(), elements };
+    return { id: d.id, label: domainLabel.trim(), elements };
   });
 
   return { version: 3, domains };

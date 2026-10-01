@@ -2,41 +2,37 @@
   "version": 3,
   "domains": [
     {
-      "id": "seguridad",
-      "label": "Seguridad y salud",
+      "id": "agua",
+      "name": "Agua",
       "elements": [
-        { "id": "seg-incidentes", "label": "Incidentes con baja", "unit": "uds", "valueType": "number" },
-        { "id": "seg-horas-formacion", "label": "Horas de formación en seguridad", "unit": "h", "valueType": "number" },
-        { "id": "seg-inspecciones-epi", "label": "Inspecciones de EPI realizadas", "unit": "%", "valueType": "number" },
-        { "id": "seg-protocolo", "label": "Protocolo de emergencia vigente", "unit": null, "valueType": "text" }
+        { "id": "agua-desperdiciada", "label": "Agua desperdiciada", "unit": "m³", "valueType": "number" },
+        { "id": "agua-reutilizada", "label": "Agua reutilizada", "unit": "m³", "valueType": "number" },
+        { "id": "agua-consumo-total", "label": "Consumo total de agua", "unit": "m³", "valueType": "number" }
       ]
     },
     {
-      "id": "calidad",
-      "label": "Calidad",
+      "id": "residuos",
+      "name": "Residuos",
       "elements": [
-        { "id": "cal-no-conformidades", "label": "No conformidades abiertas", "unit": "uds", "valueType": "number" },
-        { "id": "cal-ensayos-hormigon", "label": "Ensayos de hormigón conformes", "unit": "%", "valueType": "number" },
-        { "id": "cal-plan-calidad", "label": "Revisión del plan de calidad", "unit": null, "valueType": "text" }
+        { "id": "residuos-valorizados", "label": "Residuos valorizados", "unit": "%", "valueType": "number" },
+        { "id": "residuos-a-relleno", "label": "Residuos enviados a relleno", "unit": "t", "valueType": "number" },
+        { "id": "plan-residuos", "label": "Estrategia de gestión de residuos", "unit": null, "valueType": "text" }
       ]
     },
     {
-      "id": "medioambiente",
-      "label": "Medio ambiente",
+      "id": "suelos",
+      "name": "Suelos",
       "elements": [
-        { "id": "mam-residuos-reciclados", "label": "Residuos valorizados", "unit": "%", "valueType": "number" },
-        { "id": "mam-consumo-agua", "label": "Consumo de agua", "unit": "m³", "valueType": "number" },
-        { "id": "mam-emisiones", "label": "Emisiones de CO₂", "unit": "t CO₂e", "valueType": "number" },
-        { "id": "mam-certificacion", "label": "Certificación ambiental objetivo", "unit": null, "valueType": "text" }
+        { "id": "tierra-contaminada", "label": "Tierra contaminada", "unit": "m³", "valueType": "number" },
+        { "id": "derrames", "label": "Derrames de hidrocarburos", "unit": "n.º", "valueType": "number" }
       ]
     },
     {
-      "id": "plazo-coste",
-      "label": "Plazo y coste",
+      "id": "energia",
+      "name": "Energía y emisiones",
       "elements": [
-        { "id": "pc-avance-fisico", "label": "Avance físico", "unit": "%", "valueType": "number" },
-        { "id": "pc-desviacion-coste", "label": "Desviación de coste", "unit": "%", "valueType": "number" },
-        { "id": "pc-hito-critico", "label": "Próximo hito crítico", "unit": null, "valueType": "text" }
+        { "id": "energia-consumo", "label": "Consumo eléctrico", "unit": "kWh", "valueType": "number" },
+        { "id": "co2", "label": "Emisiones de CO₂e", "unit": "t", "valueType": "number" }
       ]
     }
   ]

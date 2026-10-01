@@ -262,7 +262,7 @@ Todos están en **`src/lib/procoreSpec.ts`**. Cada punto se corrige en una sola 
 - `GET /rest/v1.0/me`.
 - Patrón de URL `/:project_id/project/checklists/lists/:id` (vista `inspections.detail`).
 
-Las rutas `POST /rest/v1.0/checklist/lists` y `POST /rest/v1.0/projects/{project_id}/checklist/schedules` vienen del enunciado. El catálogo `src/catalog.json` no estaba en el repositorio: se creó uno de **ejemplo** con el esquema v3 descrito y debe sustituirse por el real.
+Las rutas `POST /rest/v1.0/checklist/lists` y `POST /rest/v1.0/projects/{project_id}/checklist/schedules` vienen del enunciado. El catálogo `src/catalog.json` usa el esquema v3: el dominio tiene `id` y `name` (también se acepta `label`), y cada elemento tiene `id`, `label`, `unit` y `valueType`.
 
 ---
 
