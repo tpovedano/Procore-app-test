@@ -81,6 +81,29 @@ export default function App() {
         <Notice tone="warning" title="No se detectó un proyecto de Procore">
           Abre esta app desde el panel lateral de un proyecto en Procore.
         </Notice>
+        <details className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600">
+          <summary className="cursor-pointer font-medium text-slate-800">Diagnóstico</summary>
+          <dl className="mt-2 space-y-1 break-all">
+            <div>
+              <dt className="inline font-medium">Dentro de un iframe: </dt>
+              <dd className="inline">{context.diagnostics.framed ? 'sí' : 'no'}</dd>
+            </div>
+            <div>
+              <dt className="inline font-medium">Origen del padre: </dt>
+              <dd className="inline">
+                {context.diagnostics.ancestorOrigin ?? context.diagnostics.referrerOrigin ?? 'desconocido'}
+              </dd>
+            </div>
+            <div>
+              <dt className="inline font-medium">"initialize" enviado a: </dt>
+              <dd className="inline">{context.diagnostics.initializeSentTo.join(', ') || 'ninguno'}</dd>
+            </div>
+            <div>
+              <dt className="inline font-medium">Mensajes ignorados de: </dt>
+              <dd className="inline">{context.diagnostics.ignoredMessageOrigins.join(', ') || 'ninguno'}</dd>
+            </div>
+          </dl>
+        </details>
       </FullScreenMessage>
     );
   }

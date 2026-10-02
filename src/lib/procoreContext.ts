@@ -59,6 +59,32 @@ export function parseContextFromUrl(search: string): ProcoreContext | null {
   return { companyId, projectId, view: null, resourceId: null, source: 'url' };
 }
 
+/** Orígenes de Procore documentados (Multiple Procore Regions + sandbox). */
+export const KNOWN_PROCORE_ORIGINS = [
+  'https://app.procore.com',
+  'https://us02.procore.com',
+  'https://uk01.procore.com',
+  'https://sandbox.procore.com',
+] as const;
+
+/**
+ * Orígenes a los que enviar { type: 'initialize' }. El padre real se toma de
+ * location.ancestorOrigins (Chrome/Safari) o de document.referrer; si ninguno
+ * está disponible (p. ej. Referrer-Policy: no-referrer), se prueba con los
+ * orígenes conocidos. Es seguro: postMessage con un targetOrigin que no coincide
+ * con el padre simplemente no se entrega.
+ */
+export function initializeTargets(referrer: string, ancestorOrigins: readonly string[] = []): string[] {
+  const out: string[] = [];
+  const add = (o: string | null) => {
+    if (o && isProcoreOrigin(o) && !out.includes(o)) out.push(o);
+  };
+  add(ancestorOrigins[0] ?? null);
+  add(parentOriginFromReferrer(referrer));
+  if (out.length === 0) KNOWN_PROCORE_ORIGINS.forEach(add);
+  return out;
+}
+
 /** Origen del padre (Procore) a partir de document.referrer, si es de Procore. */
 export function parentOriginFromReferrer(referrer: string): string | null {
   try {

@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { isProcoreOrigin, parentOriginFromReferrer, parseContextFromUrl, parseSetupMessage } from '../src/lib/procoreContext';
+import {
+  KNOWN_PROCORE_ORIGINS,
+  initializeTargets,
+  isProcoreOrigin,
+  parentOriginFromReferrer,
+  parseContextFromUrl,
+  parseSetupMessage,
+} from '../src/lib/procoreContext';
 
 describe('contexto del iframe', () => {
   it('acepta solo orígenes https de Procore', () => {
@@ -29,5 +36,20 @@ describe('contexto del iframe', () => {
     expect(parseContextFromUrl('?companyId=1&projectId=x')).toBeNull();
     expect(parentOriginFromReferrer('https://app.procore.com/123/project/checklists/lists/4')).toBe('https://app.procore.com');
     expect(parentOriginFromReferrer('https://example.com/')).toBeNull();
+  });
+});
+
+describe('destinos de "initialize"', () => {
+  it('usa el origen del padre (ancestorOrigins o referrer) si es de Procore', () => {
+    expect(initializeTargets('', ['https://sandbox.procore.com'])).toEqual(['https://sandbox.procore.com']);
+    expect(initializeTargets('https://us02.procore.com/1/project/checklists/lists/2')).toEqual(['https://us02.procore.com']);
+  });
+
+  it('sin referrer prueba los orígenes conocidos de Procore', () => {
+    expect(initializeTargets('')).toEqual([...KNOWN_PROCORE_ORIGINS]);
+  });
+
+  it('nunca incluye orígenes ajenos', () => {
+    expect(initializeTargets('https://evil.com/', ['https://evil.com'])).toEqual([...KNOWN_PROCORE_ORIGINS]);
   });
 });
