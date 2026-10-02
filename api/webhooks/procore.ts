@@ -26,7 +26,7 @@ function remember(id: string): boolean {
 }
 
 export async function POST(request: Request): Promise<Response> {
-  if (!isAuthorizedWebhook(request.headers.get('authorization'), process.env.WEBHOOK_SECRET)) {
+  if (!isAuthorizedWebhook(request.headers.get('authorization'), process.env.WEBHOOK_SECRET?.trim())) {
     return json(request, 401, { error: 'unauthorized' });
   }
 

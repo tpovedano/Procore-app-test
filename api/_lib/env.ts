@@ -31,11 +31,29 @@ function httpsUrl(name: string, value: string): string {
 }
 
 export function isDryRun(env: NodeJS.ProcessEnv = process.env): boolean {
-  return (env.DRY_RUN ?? '').toLowerCase() === 'true';
+  return clean(env.DRY_RUN).toLowerCase() === 'true';
+}
+
+/** Quita espacios, saltos de línea y comillas envolventes que suelen colarse al pegar valores en Vercel. */
+function clean(v: string | undefined): string {
+  return (v ?? '').trim().replace(/^(['"])(.*)\1$/, '$2').trim();
 }
 
 /** Lee y valida la configuración. `requireOAuth=false` permite arrancar en dry-run sin credenciales. */
-export function getConfig(env: NodeJS.ProcessEnv = process.env, requireOAuth = true): ServerConfig {
+export function getConfig(rawEnv: NodeJS.ProcessEnv = process.env, requireOAuth = true): ServerConfig {
+  const env: Record<string, string> = {};
+  for (const k of [
+    'PROCORE_BASE_URL',
+    'PROCORE_LOGIN_URL',
+    'PROCORE_CLIENT_ID',
+    'PROCORE_CLIENT_SECRET',
+    'PROCORE_REDIRECT_URI',
+    'SESSION_SECRET',
+    'WEBHOOK_SECRET',
+    'DRY_RUN',
+  ]) {
+    env[k] = clean(rawEnv[k]);
+  }
   const baseUrl = httpsUrl('PROCORE_BASE_URL', env.PROCORE_BASE_URL || 'https://sandbox.procore.com');
   const environment = /sandbox/.test(baseUrl) ? 'sandbox' : 'production';
   const loginUrl = env.PROCORE_LOGIN_URL
@@ -50,6 +68,7 @@ export function getConfig(env: NodeJS.ProcessEnv = process.env, requireOAuth = t
   const clientSecret = env.PROCORE_CLIENT_SECRET ?? '';
   const redirectUri = env.PROCORE_REDIRECT_URI ?? '';
   const sessionSecret = env.SESSION_SECRET ?? '';
+  if (requireOAuth && /\s/.test(clientId)) throw new ConfigError('PROCORE_CLIENT_ID contiene espacios: cópialo de nuevo del Developer Portal.');
 
   if (requireOAuth) {
     const missing = [
@@ -70,7 +89,7 @@ export function getConfig(env: NodeJS.ProcessEnv = process.env, requireOAuth = t
     redirectUri,
     webhookSecret: env.WEBHOOK_SECRET || undefined,
     sessionSecret,
-    dryRun: isDryRun(env),
+    dryRun: isDryRun(rawEnv),
     environment,
   };
 }

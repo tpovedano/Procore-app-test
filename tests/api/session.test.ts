@@ -33,4 +33,15 @@ describe('configuración', () => {
     expect(() => getConfig({ ...base, PROCORE_BASE_URL: 'http://api.procore.com' })).toThrow(/https/);
     expect(() => getConfig({ PROCORE_BASE_URL: 'https://api.procore.com' })).toThrow(/Faltan/);
   });
+
+  it('limpia espacios, saltos de línea y comillas pegados por error', () => {
+    const cfg = getConfig({
+      PROCORE_CLIENT_ID: '  abc123\n',
+      PROCORE_CLIENT_SECRET: '"secreto"',
+      PROCORE_REDIRECT_URI: ' https://x/cb ',
+      PROCORE_BASE_URL: 'https://sandbox.procore.com/ ',
+      SESSION_SECRET: ` ${SECRET}\n`,
+    });
+    expect(cfg).toMatchObject({ clientId: 'abc123', clientSecret: 'secreto', redirectUri: 'https://x/cb', sessionSecret: SECRET });
+  });
 });
