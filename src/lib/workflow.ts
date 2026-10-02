@@ -83,25 +83,66 @@ export function hasExisting(e: ExistingObjects): boolean {
 
 // ─── Errores legibles ─────────────────────────────────────────────────────────
 
+/** Texto breve de la respuesta de Procore (para mostrar al usuario). */
+function procoreDetail(e: ProcoreApiError): string {
+  return e.message && !/^Error HTTP \d+$/.test(e.message) ? e.message : '';
+}
+
 export function describeError(e: unknown): string {
   if (e instanceof ProcoreApiError) {
+    const where = e.request ? ` [${e.request.method} ${e.request.path}]` : '';
+    const detail = procoreDetail(e);
     switch (e.status) {
       case 401:
         return 'La sesión con Procore ha caducado. Vuelve a conectar.';
       case 403:
-        return 'No tienes permisos suficientes en Procore para esta acción (revisa los permisos de Inspections/Projects).';
+        return `No tienes permisos suficientes en Procore para esta acción (revisa los permisos de Inspections/Projects)${where}.`;
       case 404:
-        return 'Procore no encontró el recurso solicitado.';
-      case 422:
-        return `Procore rechazó los datos enviados: ${e.message}`;
+        return `Procore respondió 404 (no encontrado)${where}.${detail ? ` ${detail}` : ''}`;
+      case 422: {
+        const hint = /list_template/i.test(detail)
+          ? ' Puede que la plantilla esté vacía o incompleta por un intento anterior: elimínala en Procore (Inspecciones → Plantillas) y vuelve a crear.'
+          : '';
+        return `Procore rechazó los datos enviados${where}: ${detail || 'sin detalle'}.${hint}`;
+      }
       case 429:
         return 'Se alcanzó el límite de peticiones de Procore. Espera un momento e inténtalo de nuevo.';
       default:
-        return e.status >= 500 ? `Procore no está disponible ahora mismo (${e.status}).` : e.message;
+        return e.status >= 500
+          ? `Procore no está disponible ahora mismo (${e.status})${where}.`
+          : `Error ${e.status}${where}: ${detail || e.message}`;
     }
   }
   if (e instanceof Error) return e.message;
   return 'Error desconocido.';
+}
+
+// ─── Reintentos por propagación ───────────────────────────────────────────────
+
+/** Esperas entre reintentos cuando un objeto recién creado aún no es visible. */
+export const PROPAGATION_DELAYS_MS = [1500, 3000, 5000];
+
+const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * Reintenta `fn` si Procore responde 404, o 422 que menciona `list_template`,
+ * justo después de crear el objeto del que depende (consistencia eventual).
+ */
+export async function retryWhileNotVisible<T>(
+  fn: () => Promise<T>,
+  sleep: (ms: number) => Promise<void> = defaultSleep,
+  delays: readonly number[] = PROPAGATION_DELAYS_MS,
+): Promise<T> {
+  for (let i = 0; ; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      const transient =
+        e instanceof ProcoreApiError && (e.status === 404 || (e.status === 422 && /list_template/i.test(e.message)));
+      if (!transient || i >= delays.length) throw e;
+      await sleep(delays[i]!);
+    }
+  }
 }
 
 // ─── Fase 1: preparar ─────────────────────────────────────────────────────────
@@ -172,6 +213,8 @@ export interface ExecuteInput {
   webBase: string;
   today?: string;
   onProgress?: (steps: StepState[]) => void;
+  /** Inyectable para tests. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export interface ExecuteResult {
@@ -181,11 +224,32 @@ export interface ExecuteResult {
   summary: string[];
 }
 
+/** Busca por nombre la plantilla recién creada (la más reciente = id mayor), con reintentos. */
+async function findCreatedTemplate(
+  client: ProcoreClient,
+  projectId: string,
+  sleep: (ms: number) => Promise<void>,
+): Promise<string | null> {
+  for (let i = 0; i <= PROPAGATION_DELAYS_MS.length; i++) {
+    const templates = await client.listProjectTemplates(projectId);
+    const ids = templates
+      .filter((t) => sameName(extractName(t), TEMPLATE_NAME))
+      .map((t) => extractId(t))
+      .filter((x): x is string => x !== null)
+      .sort((a, b) => Number(b) - Number(a));
+    if (ids[0]) return ids[0];
+    if (i < PROPAGATION_DELAYS_MS.length) await sleep(PROPAGATION_DELAYS_MS[i]!);
+  }
+  return null;
+}
+
 export async function execute(input: ExecuteInput): Promise<ExecuteResult> {
   const { client, projectId, sections, prepared, webBase } = input;
   const reuse = input.reuseExisting;
   const existing = prepared.existing;
   const today = input.today ?? todayIso();
+  const sleep = input.sleep ?? defaultSleep;
+  const retry = <T,>(fn: () => Promise<T>) => retryWhileNotVisible(fn, sleep);
   const steps = initialSteps();
   const summary: string[] = [];
 
@@ -211,18 +275,28 @@ export async function execute(input: ExecuteInput): Promise<ExecuteResult> {
       summary.push(`Plantilla reutilizada (id ${templateId}).`);
     } else {
       const tpl = await client.createProjectTemplate(projectId, buildTemplatePayload());
-      const id = extractId(tpl);
-      if (!id) throw new Error('Procore no devolvió el id de la plantilla.');
+      let id = extractId(tpl);
+      if (!id) {
+        // La respuesta no trae el id reconocible: se busca la plantilla recién creada por nombre.
+        id = await findCreatedTemplate(client, projectId, sleep);
+      }
+      if (!id) {
+        throw new Error(
+          'Procore creó la plantilla pero no se pudo obtener su id. Revisa el registro técnico y elimina la plantilla en Procore antes de reintentar.',
+        );
+      }
       templateId = id;
       const totalItems = sections.reduce((n, s) => n + s.items.length, 0);
       let createdItems = 0;
       try {
         for (const [si, section] of sections.entries()) {
-          const sec = await client.createTemplateSection(projectId, templateId, buildSectionPayload(section.name, si + 1));
+          const sec = await retry(() =>
+            client.createTemplateSection(projectId, templateId, buildSectionPayload(section.name, si + 1)),
+          );
           const sectionId = extractId(sec);
           if (!sectionId) throw new Error(`Procore no devolvió el id de la sección "${section.name}".`);
           for (const [ii, item] of section.items.entries()) {
-            await client.createTemplateItem(projectId, templateId, sectionId, buildItemPayload(item, ii + 1));
+            await retry(() => client.createTemplateItem(projectId, templateId, sectionId, buildItemPayload(item, ii + 1)));
             createdItems++;
           }
         }
@@ -253,7 +327,7 @@ export async function execute(input: ExecuteInput): Promise<ExecuteResult> {
       });
       summary.push(`Inspección "${INSPECTION_NAME}" reutilizada (id ${listId}).`);
     } else {
-      const list = await client.createChecklist(projectId, buildChecklistPayload({ projectId, templateId }));
+      const list = await retry(() => client.createChecklist(projectId, buildChecklistPayload({ projectId, templateId })));
       const id = extractId(list);
       if (!id) throw new Error('Procore no devolvió el id de la inspección.');
       listId = id;
@@ -264,7 +338,7 @@ export async function execute(input: ExecuteInput): Promise<ExecuteResult> {
     // 3. Valores objetivo como respuesta de cada ítem (emparejados por nombre).
     current = 'responses';
     update('responses', { status: 'running' });
-    const detail = await client.getChecklist(projectId, listId);
+    const detail = await retry(() => client.getChecklist(projectId, listId));
     const listItems = extractChecklistItems(detail);
     const planned = sections.flatMap((s) => s.items.map((it) => ({ ...it, sectionName: s.name })));
     let written = 0;
@@ -316,7 +390,7 @@ export async function execute(input: ExecuteInput): Promise<ExecuteResult> {
       summary.push(`Planificación trimestral reutilizada (id ${sid}).`);
     } else {
       const payload = buildSchedulePayload({ templateId, startDate: today, endDate: prepared.endDate });
-      const sch = await client.createSchedule(projectId, payload);
+      const sch = await retry(() => client.createSchedule(projectId, payload));
       const sid = extractId(sch);
       update('schedule', {
         status: 'done',

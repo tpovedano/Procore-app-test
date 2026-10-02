@@ -28,6 +28,9 @@ export interface ApiResponse<T = unknown> {
 export type Transport = (req: ApiRequest) => Promise<ApiResponse>;
 
 export class ProcoreApiError extends Error {
+  /** Petición que falló (método y ruta), para mostrar dónde ocurrió el error. */
+  request?: { method: string; path: string };
+
   constructor(
     message: string,
     readonly status: number,
@@ -36,6 +39,18 @@ export class ProcoreApiError extends Error {
     super(message);
     this.name = 'ProcoreApiError';
   }
+}
+
+/** Envuelve el transporte para anotar en cada ProcoreApiError qué petición falló. */
+function annotateErrors(transport: Transport): Transport {
+  return async (req) => {
+    try {
+      return await transport(req);
+    } catch (e) {
+      if (e instanceof ProcoreApiError && !e.request) e.request = { method: req.method, path: req.path };
+      throw e;
+    }
+  };
 }
 
 /** Objeto genérico de Procore (al menos id y, a menudo, name). */
@@ -62,7 +77,8 @@ async function one<T = ProcoreObject>(transport: Transport, req: ApiRequest): Pr
   return res.data as T;
 }
 
-export function createProcoreClient(transport: Transport) {
+export function createProcoreClient(rawTransport: Transport) {
+  const transport = annotateErrors(rawTransport);
   return {
     getMe: () => one(transport, { method: 'GET', path: paths.me() }),
 

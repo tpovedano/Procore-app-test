@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import rawCatalog from './catalog.json';
 import { CreateBar } from './components/CreateBar';
 import { DomainAccordion } from './components/DomainAccordion';
-import { DryRunLog } from './components/DryRunLog';
+import { ApiLog } from './components/ApiLog';
 import { DuplicateDialog } from './components/DuplicateDialog';
 import { Header } from './components/Header';
 import { Notice } from './components/Notice';
@@ -13,7 +13,8 @@ import { useAppConfig, type AppConfig } from './hooks/useAppConfig';
 import { useProcoreContext } from './hooks/useProcoreContext';
 import { CatalogError, filterCatalog, parseCatalog, type Catalog } from './lib/catalog';
 import { formatDateEs } from './lib/dates';
-import { createDryRunTransport, type DryRunEntry } from './lib/dryRun';
+import { withLogging, type ApiLogEntry } from './lib/apiLog';
+import { createDryRunTransport } from './lib/dryRun';
 import { getIframeContext } from './lib/iframeHelpers';
 import { createProcoreClient, type ProcoreClient } from './lib/procore';
 import type { ProcoreContext } from './lib/procoreContext';
@@ -141,19 +142,22 @@ function Main({ config, context, catalog }: MainProps) {
   const sessionRef = useRef<string | null>(null);
   sessionRef.current = session;
   const [authError, setAuthError] = useState<string | null>(null);
-  const [dryLog, setDryLog] = useState<DryRunEntry[]>([]);
+  const [dryLog, setDryLog] = useState<ApiLogEntry[]>([]);
 
   const client: ProcoreClient = useMemo(
     () =>
       createProcoreClient(
         config.dryRun
           ? createDryRunTransport({ onRequest: (e) => setDryLog((l) => [...l, e]) })
-          : createProxyTransport({
-              companyId: context.companyId,
-              getSession: () => sessionRef.current,
-              onSessionRenewed: (s) => setSession(s),
-              onUnauthorized: () => setSession(null),
-            }),
+          : withLogging(
+              createProxyTransport({
+                companyId: context.companyId,
+                getSession: () => sessionRef.current,
+                onSessionRenewed: (s) => setSession(s),
+                onUnauthorized: () => setSession(null),
+              }),
+              (e) => setDryLog((l) => [...l, e]),
+            ),
       ),
     [config.dryRun, context.companyId],
   );
@@ -252,7 +256,7 @@ interface WorkspaceProps {
   context: ProcoreContext;
   webBase: string;
   dryRun: boolean;
-  dryLog: DryRunEntry[];
+  dryLog: ApiLogEntry[];
   clearDryLog: () => void;
 }
 
@@ -365,7 +369,7 @@ function Workspace({ catalog, client, context, webBase, dryRun, dryLog, clearDry
           </>
         )}
 
-        {dryRun && <DryRunLog entries={dryLog} />}
+        <ApiLog entries={dryLog} dryRun={dryRun} />
       </main>
 
       {!showProgress && (

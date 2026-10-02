@@ -284,11 +284,26 @@ export function buildScheduleEndDatePatch(endDate: string): Record<string, unkno
 
 // ─── Lectura de respuestas ────────────────────────────────────────────────────
 
+/**
+ * Id de un objeto devuelto por Procore. TODO(verify): forma de las respuestas de
+ * creación. Acepta { id }, { data: { id } } y un objeto envuelto por su tipo,
+ * p. ej. { list_template: { id } } o { section: { id } }.
+ */
 export function extractId(resp: unknown): string | null {
-  if (typeof resp !== 'object' || resp === null) return null;
+  const direct = (o: unknown): string | null => {
+    if (typeof o !== 'object' || o === null || Array.isArray(o)) return null;
+    const raw = (o as Record<string, unknown>).id;
+    return typeof raw === 'number' || (typeof raw === 'string' && raw !== '') ? String(raw) : null;
+  };
+  if (typeof resp !== 'object' || resp === null || Array.isArray(resp)) return null;
+  const top = direct(resp);
+  if (top) return top;
   const r = resp as Record<string, unknown>;
-  const raw = r.id ?? (typeof r.data === 'object' && r.data !== null ? (r.data as Record<string, unknown>).id : undefined);
-  return typeof raw === 'number' || (typeof raw === 'string' && raw !== '') ? String(raw) : null;
+  const fromData = direct(r.data);
+  if (fromData) return fromData;
+  // Un único objeto anidado con id (envoltorio por tipo).
+  const nested = Object.values(r).map(direct).filter((x): x is string => x !== null);
+  return nested.length === 1 ? nested[0]! : null;
 }
 
 export function extractName(obj: unknown): string | null {
