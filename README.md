@@ -234,8 +234,8 @@ Todos están en **`src/lib/procoreSpec.ts`**. Cada punto se corrige en una sola 
 | --- | --- | --- | --- |
 | 1 | Ruta de "Show Project" y **campo de fecha fin** | `ENDPOINTS.showProject`, `PROJECT_END_DATE_FIELDS` | `GET /rest/v1.0/projects/{id}?company_id=`; prueba primero `completion_date` y luego `projected_finish_date` |
 | 2 | List y Create de **Project Checklist Templates** | `paths.projectTemplates`, `buildTemplatePayload` | `/rest/v1.0/projects/{pid}/checklist/list_templates`, cuerpo `{ list_template: { name, description } }` |
-| 3 | Crear **sección** de plantilla | `paths.templateSections`, `buildSectionPayload` | `…/list_templates/{tid}/sections`, cuerpo `{ section: { name, position } }` |
-| 4 | Crear **ítem** de plantilla | `paths.templateItems`, `buildItemPayload` | `…/sections/{sid}/items`, cuerpo `{ item: { name, position, … } }` |
+| 3 | Crear **sección** de plantilla | `paths.templateSections`, `buildSectionPayload` | La ruta de proyecto devolvió **404** en sandbox. Se usa *Company Checklist Template Sections*: `POST /rest/v1.0/companies/{cid}/checklist/list_templates/{tid}/sections` con el id de la plantilla de proyecto; cuerpo `{ section: { name, position } }` (pendiente de confirmar) |
+| 4 | Crear **ítem** de plantilla | `paths.templateItems`, `buildItemPayload` | `/rest/v1.0/companies/{cid}/checklist/list_templates/{tid}/sections/{sid}/items`, cuerpo `{ item: { name, position, … } }` |
 | 5 | **Tipo de ítem** número/texto (*Checklist Item Types*) | `itemTypeFields()` | `{ item_type: 'number' \| 'text' }` |
 | 6 | Cuerpo de **Create Checklist** desde plantilla | `buildChecklistPayload()` | `POST /rest/v1.0/checklist/lists?project_id=`, cuerpo `{ project_id, list_template_id, list: { name } }` |
 | 7 | **Show Checklist** devuelve las secciones con sus ítems | `paths.checklist`, `extractChecklistItems()` | `{ sections: [{ name, items: [{ id, name }] }] }` |

@@ -279,6 +279,7 @@ function Workspace({ catalog, client, context, webBase, dryRun, dryLog, clearDry
       setPhase({ kind: 'running', steps: [] });
       const result = await execute({
         client,
+        companyId: context.companyId,
         projectId: context.projectId,
         sections,
         prepared,
@@ -288,7 +289,7 @@ function Workspace({ catalog, client, context, webBase, dryRun, dryLog, clearDry
       });
       setPhase({ kind: 'finished', result, endDate: prepared.endDate });
     },
-    [client, context.projectId, webBase],
+    [client, context.companyId, context.projectId, webBase],
   );
 
   const onCreate = useCallback(async () => {

@@ -90,6 +90,7 @@ describe('plantilla sin id en la respuesta', () => {
     const plan = buildPlan(catalog, { inc: '1' });
     if (!plan.ok) throw new Error('plan');
     const result = await execute({
+      companyId: '10',
       client: createProcoreClient(t),
       projectId: '2',
       sections: plan.sections,

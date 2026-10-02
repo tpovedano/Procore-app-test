@@ -65,15 +65,18 @@ export const ENDPOINTS = {
   },
   createTemplateSection: {
     method: 'POST',
-    template: '/rest/v1.0/projects/{project_id}/checklist/list_templates/{list_template_id}/sections',
+    template: '/rest/v1.0/companies/{company_id}/checklist/list_templates/{list_template_id}/sections',
     verified: false,
-    note: 'TODO(verify): Checklist Sections → Create (sección de plantilla).',
+    note:
+      'Existe "Company Checklist Template Sections → Create" con {list_template_id} (confirmado por el usuario); la ruta ' +
+      '/projects/{project_id}/…/sections devolvió 404 en sandbox. Se usa con el id de la plantilla de PROYECTO. ' +
+      'TODO(verify): ruta exacta, cuerpo y que acepte plantillas de proyecto.',
   },
   createTemplateItem: {
     method: 'POST',
-    template: '/rest/v1.0/projects/{project_id}/checklist/list_templates/{list_template_id}/sections/{section_id}/items',
+    template: '/rest/v1.0/companies/{company_id}/checklist/list_templates/{list_template_id}/sections/{section_id}/items',
     verified: false,
-    note: 'TODO(verify): Checklist Items → Create (ítem de plantilla) y campo de tipo de ítem (Checklist Item Types).',
+    note: 'TODO(verify): Company Checklist Template Items → Create y campo de tipo de ítem (Checklist Item Types).',
   },
   listChecklists: {
     method: 'GET',
@@ -128,10 +131,11 @@ export const paths = {
   me: () => '/rest/v1.0/me',
   showProject: (projectId: Id) => `/rest/v1.0/projects/${enc(projectId)}`,
   projectTemplates: (projectId: Id) => `/rest/v1.0/projects/${enc(projectId)}/checklist/list_templates`,
-  templateSections: (projectId: Id, templateId: Id) =>
-    `/rest/v1.0/projects/${enc(projectId)}/checklist/list_templates/${enc(templateId)}/sections`,
-  templateItems: (projectId: Id, templateId: Id, sectionId: Id) =>
-    `/rest/v1.0/projects/${enc(projectId)}/checklist/list_templates/${enc(templateId)}/sections/${enc(sectionId)}/items`,
+  // Las secciones e ítems de plantilla se crean con los endpoints de COMPAÑÍA (los de proyecto no existen).
+  templateSections: (companyId: Id, templateId: Id) =>
+    `/rest/v1.0/companies/${enc(companyId)}/checklist/list_templates/${enc(templateId)}/sections`,
+  templateItems: (companyId: Id, templateId: Id, sectionId: Id) =>
+    `/rest/v1.0/companies/${enc(companyId)}/checklist/list_templates/${enc(templateId)}/sections/${enc(sectionId)}/items`,
   checklists: () => '/rest/v1.0/checklist/lists',
   checklist: (listId: Id) => `/rest/v1.0/checklist/lists/${enc(listId)}`,
   itemResponses: (listId: Id, itemId: Id) =>
@@ -150,8 +154,8 @@ export const PROXY_ALLOWLIST: ReadonlyArray<{ method: HttpMethod; pattern: RegEx
   { method: 'GET', pattern: /^\/rest\/v1\.0\/projects\/\d+$/ },
   { method: 'GET', pattern: /^\/rest\/v1\.0\/projects\/\d+\/checklist\/list_templates$/ },
   { method: 'POST', pattern: /^\/rest\/v1\.0\/projects\/\d+\/checklist\/list_templates$/ },
-  { method: 'POST', pattern: /^\/rest\/v1\.0\/projects\/\d+\/checklist\/list_templates\/\d+\/sections$/ },
-  { method: 'POST', pattern: /^\/rest\/v1\.0\/projects\/\d+\/checklist\/list_templates\/\d+\/sections\/\d+\/items$/ },
+  { method: 'POST', pattern: /^\/rest\/v1\.0\/companies\/\d+\/checklist\/list_templates\/\d+\/sections$/ },
+  { method: 'POST', pattern: /^\/rest\/v1\.0\/companies\/\d+\/checklist\/list_templates\/\d+\/sections\/\d+\/items$/ },
   { method: 'GET', pattern: /^\/rest\/v1\.0\/checklist\/lists$/ },
   { method: 'POST', pattern: /^\/rest\/v1\.0\/checklist\/lists$/ },
   { method: 'GET', pattern: /^\/rest\/v1\.0\/checklist\/lists\/\d+$/ },

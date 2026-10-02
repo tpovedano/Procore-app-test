@@ -29,12 +29,14 @@ describe('flujo completo (dry-run)', () => {
     expect(hasExisting(prepared.existing)).toBe(false);
 
     const sections = plan({ inc: '2', prot: 'Vigente', agua: '150' });
-    const result = await execute({ client, projectId: '20', sections, prepared, reuseExisting: false, webBase: WEB, today: TODAY });
+    const result = await execute({ companyId: '10', client, projectId: '20', sections, prepared, reuseExisting: false, webBase: WEB, today: TODAY });
     expect(result.ok).toBe(true);
     expect(result.steps.map((s) => s.status)).toEqual(['done', 'done', 'done', 'done']);
 
     const posts = log.filter((e) => e.method === 'POST');
     const sectionPosts = posts.filter((e) => e.path.endsWith('/sections'));
+    // Secciones e ítems con endpoints de compañía sobre la plantilla de proyecto.
+    expect(sectionPosts.every((e) => /^\/rest\/v1\.0\/companies\/10\/checklist\/list_templates\/\d+\/sections$/.test(e.path))).toBe(true);
     expect(sectionPosts.map((e) => (e.body as any).section.name)).toEqual(['Seguridad', 'Medio ambiente']);
     const itemPosts = posts.filter((e) => e.path.endsWith('/items'));
     expect(itemPosts.map((e) => (e.body as any).item.name)).toEqual(['Incidentes (uds)', 'Protocolo', 'Consumo de agua (m³)']);
@@ -114,6 +116,7 @@ describe('duplicados y paginación', () => {
       return undefined;
     });
     const result = await execute({
+      companyId: '10',
       client: createProcoreClient(t),
       projectId: '20',
       sections: plan({ inc: '4', prot: 'Sí' }),
@@ -150,6 +153,7 @@ describe('errores parciales', () => {
       throw new ProcoreApiError('boom', 500);
     });
     const result = await execute({
+      companyId: '10',
       client: { ...client, createSchedule: failing.createSchedule },
       projectId: '20',
       sections: plan({ inc: '1' }),
@@ -171,6 +175,7 @@ describe('errores parciales', () => {
       return undefined;
     });
     const result = await execute({
+      companyId: '10',
       client: createProcoreClient(t),
       projectId: '20',
       sections: plan({ inc: '1', form: '2', prot: 'x' }),

@@ -205,6 +205,8 @@ export async function prepare(
 
 export interface ExecuteInput {
   client: ProcoreClient;
+  /** Necesario para las secciones/ítems de plantilla (endpoints de compañía). */
+  companyId: string;
   projectId: string;
   sections: PlannedSection[];
   prepared: Prepared;
@@ -244,7 +246,7 @@ async function findCreatedTemplate(
 }
 
 export async function execute(input: ExecuteInput): Promise<ExecuteResult> {
-  const { client, projectId, sections, prepared, webBase } = input;
+  const { client, companyId, projectId, sections, prepared, webBase } = input;
   const reuse = input.reuseExisting;
   const existing = prepared.existing;
   const today = input.today ?? todayIso();
@@ -291,12 +293,12 @@ export async function execute(input: ExecuteInput): Promise<ExecuteResult> {
       try {
         for (const [si, section] of sections.entries()) {
           const sec = await retry(() =>
-            client.createTemplateSection(projectId, templateId, buildSectionPayload(section.name, si + 1)),
+            client.createTemplateSection(companyId, templateId, buildSectionPayload(section.name, si + 1)),
           );
           const sectionId = extractId(sec);
           if (!sectionId) throw new Error(`Procore no devolvió el id de la sección "${section.name}".`);
           for (const [ii, item] of section.items.entries()) {
-            await retry(() => client.createTemplateItem(projectId, templateId, sectionId, buildItemPayload(item, ii + 1)));
+            await retry(() => client.createTemplateItem(companyId, templateId, sectionId, buildItemPayload(item, ii + 1)));
             createdItems++;
           }
         }

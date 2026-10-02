@@ -90,11 +90,11 @@ export function createProcoreClient(rawTransport: Transport) {
     createProjectTemplate: (projectId: string, payload: unknown) =>
       one(transport, { method: 'POST', path: paths.projectTemplates(projectId), body: payload }),
 
-    createTemplateSection: (projectId: string, templateId: string, payload: unknown) =>
-      one(transport, { method: 'POST', path: paths.templateSections(projectId, templateId), body: payload }),
+    createTemplateSection: (companyId: string, templateId: string, payload: unknown) =>
+      one(transport, { method: 'POST', path: paths.templateSections(companyId, templateId), body: payload }),
 
-    createTemplateItem: (projectId: string, templateId: string, sectionId: string, payload: unknown) =>
-      one(transport, { method: 'POST', path: paths.templateItems(projectId, templateId, sectionId), body: payload }),
+    createTemplateItem: (companyId: string, templateId: string, sectionId: string, payload: unknown) =>
+      one(transport, { method: 'POST', path: paths.templateItems(companyId, templateId, sectionId), body: payload }),
 
     listChecklists: (projectId: string) => listAll(transport, paths.checklists(), { project_id: projectId }),
 
