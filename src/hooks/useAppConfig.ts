@@ -4,6 +4,8 @@ export interface AppConfig {
   dryRun: boolean;
   webBaseUrl: string;
   environment: 'sandbox' | 'production';
+  /** Commit desplegado (7 caracteres) o "local". */
+  version: string;
 }
 
 export type ConfigState =
@@ -29,7 +31,12 @@ export function useAppConfig(): ConfigState {
         if (!cancelled) {
           setState({
             status: 'ready',
-            config: { dryRun: Boolean(data.dryRun), webBaseUrl: data.webBaseUrl, environment: data.environment ?? 'sandbox' },
+            config: {
+              dryRun: Boolean(data.dryRun),
+              webBaseUrl: data.webBaseUrl,
+              environment: data.environment ?? 'sandbox',
+              version: typeof data.version === 'string' ? data.version : '?',
+            },
           });
         }
       })

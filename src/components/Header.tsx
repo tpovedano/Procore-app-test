@@ -3,10 +3,11 @@ interface Props {
   userName: string | null;
   dryRun: boolean;
   environment: 'sandbox' | 'production';
+  version: string;
   onDisconnect?: () => void;
 }
 
-export function Header({ projectName, userName, dryRun, environment, onDisconnect }: Props) {
+export function Header({ projectName, userName, dryRun, environment, version, onDisconnect }: Props) {
   return (
     <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 px-4 py-3 backdrop-blur">
       <div className="flex items-start justify-between gap-3">
@@ -27,6 +28,9 @@ export function Header({ projectName, userName, dryRun, environment, onDisconnec
           {environment === 'sandbox' && (
             <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[11px] font-medium text-sky-800">Sandbox</span>
           )}
+          <span className="font-mono text-[10px] text-slate-400" title="Versión desplegada (commit)">
+            v{version}
+          </span>
           {onDisconnect && (
             <button
               type="button"

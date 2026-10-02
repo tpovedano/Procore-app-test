@@ -5,7 +5,9 @@ import { json, preflight } from './_lib/http.js';
 export function GET(request: Request): Response {
   try {
     const cfg = getConfig(process.env, !isDryRun());
-    return json(request, 200, { dryRun: cfg.dryRun, webBaseUrl: cfg.webBaseUrl, environment: cfg.environment });
+    // Versión desplegada (variable de sistema de Vercel) para saber qué commit está en producción.
+    const version = (process.env.VERCEL_GIT_COMMIT_SHA ?? '').slice(0, 7) || 'local';
+    return json(request, 200, { dryRun: cfg.dryRun, webBaseUrl: cfg.webBaseUrl, environment: cfg.environment, version });
   } catch (e) {
     const message = e instanceof ConfigError ? e.message : 'Configuración del servidor inválida.';
     return json(request, 500, { error: message });

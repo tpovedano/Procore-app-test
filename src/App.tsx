@@ -233,6 +233,7 @@ function Main({ config, context, catalog }: MainProps) {
         userName={userName}
         dryRun={config.dryRun}
         environment={config.environment}
+        version={config.version}
         onDisconnect={config.dryRun ? undefined : () => setSession(null)}
       />
       <Workspace
