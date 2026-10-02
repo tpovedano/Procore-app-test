@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { seal, unseal } from '../../api/_lib/session';
-import { getConfig } from '../../api/_lib/env';
+import { seal, unseal } from '../../api/_lib/session.js';
+import { getConfig } from '../../api/_lib/env.js';
 
 const SECRET = 'x'.repeat(40);
 

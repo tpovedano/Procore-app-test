@@ -4,11 +4,11 @@
  *  - El token sale de la sesión cifrada (cabecera X-App-Session); se refresca si caduca.
  *  - Añade Procore-Company-Id y aplica reintentos con backoff (429/503).
  */
-import { isAllowedRequest, type HttpMethod } from '../../src/lib/procoreSpec';
-import { getConfig, isDryRun, type ServerConfig } from '../_lib/env';
-import { isAllowedOrigin, json, preflight, readJson } from '../_lib/http';
-import { callProcore, parseProcoreResponse, refreshAccessToken } from '../_lib/procoreServer';
-import { seal, unseal, type SessionData } from '../_lib/session';
+import { isAllowedRequest, type HttpMethod } from '../../src/lib/procoreSpec.js';
+import { getConfig, isDryRun, type ServerConfig } from '../_lib/env.js';
+import { isAllowedOrigin, json, preflight, readJson } from '../_lib/http.js';
+import { callProcore, parseProcoreResponse, refreshAccessToken } from '../_lib/procoreServer.js';
+import { seal, unseal, type SessionData } from '../_lib/session.js';
 
 const METHODS = new Set<HttpMethod>(['GET', 'POST', 'PATCH']);
 const QUERY_KEY = /^[a-z_]{1,40}$/;

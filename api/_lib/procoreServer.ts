@@ -1,8 +1,8 @@
 /** Llamadas servidor → Procore: OAuth y peticiones REST con reintentos. Nunca se registran tokens. */
-import { fetchWithRetry } from '../../src/lib/retry';
-import { ProcoreApiError, type ApiRequest, type ApiResponse, type Transport } from '../../src/lib/procore';
-import { procoreErrorMessage } from '../../src/lib/transport';
-import type { ServerConfig } from './env';
+import { fetchWithRetry } from '../../src/lib/retry.js';
+import { ProcoreApiError, type ApiRequest, type ApiResponse, type Transport } from '../../src/lib/procore.js';
+import { procoreErrorMessage } from '../../src/lib/transport.js';
+import type { ServerConfig } from './env.js';
 
 export interface TokenResponse {
   access_token: string;

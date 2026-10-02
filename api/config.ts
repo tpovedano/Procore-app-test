@@ -1,6 +1,6 @@
 /** GET /api/config → configuración pública (sin secretos) para el frontend. */
-import { ConfigError, getConfig, isDryRun } from './_lib/env';
-import { json, preflight } from './_lib/http';
+import { ConfigError, getConfig, isDryRun } from './_lib/env.js';
+import { json, preflight } from './_lib/http.js';
 
 export function GET(request: Request): Response {
   try {

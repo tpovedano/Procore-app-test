@@ -3,8 +3,8 @@
  * que se enviarían y se devuelven respuestas simuladas coherentes, de modo que
  * el flujo completo puede recorrerse y revisarse.
  */
-import { addMonthsIso, todayIso } from './dates';
-import type { ApiRequest, ApiResponse, Transport } from './procore';
+import { addMonthsIso, todayIso } from './dates.js';
+import type { ApiRequest, ApiResponse, Transport } from './procore.js';
 
 export interface DryRunEntry {
   seq: number;

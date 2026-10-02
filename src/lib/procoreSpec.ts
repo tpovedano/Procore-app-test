@@ -15,9 +15,9 @@
  * Si algo no coincide con la referencia, corrígelo SOLO en este archivo.
  */
 
-import type { ValueType } from './catalog';
-import { toIsoDate } from './dates';
-import type { PlannedItem } from './selection';
+import type { ValueType } from './catalog.js';
+import { toIsoDate } from './dates.js';
+import type { PlannedItem } from './selection.js';
 
 // ─── Nombres de los objetos que crea la app (sirven también para detectar duplicados) ───
 

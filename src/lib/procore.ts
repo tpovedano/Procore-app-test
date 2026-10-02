@@ -6,9 +6,9 @@
  * y la cabecera Procore-Company-Id; en dry-run se usa un transporte simulado.
  * Rutas y payloads salen de procoreSpec.ts.
  */
-import { hasNextPage } from './retry';
-import { paths } from './procoreSpec';
-import type { HttpMethod } from './procoreSpec';
+import { hasNextPage } from './retry.js';
+import { paths } from './procoreSpec.js';
+import type { HttpMethod } from './procoreSpec.js';
 
 export type Query = Record<string, string | number>;
 

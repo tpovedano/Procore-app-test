@@ -17,7 +17,13 @@ export function useAppConfig(): ConfigState {
     let cancelled = false;
     fetch('/api/config', { credentials: 'same-origin' })
       .then(async (r) => {
-        const data = (await r.json()) as Partial<AppConfig> & { error?: string };
+        let data: Partial<AppConfig> & { error?: string };
+        try {
+          data = (await r.json()) as Partial<AppConfig> & { error?: string };
+        } catch {
+          // Respuesta no JSON: la función serverless falló antes de ejecutarse (revisa los logs de Vercel).
+          throw new Error(`El servidor respondió con un error (${r.status}). Revisa los logs de las funciones en Vercel.`);
+        }
         if (!r.ok) throw new Error(data.error ?? `Error ${r.status}`);
         if (typeof data.webBaseUrl !== 'string') throw new Error('Configuración incompleta.');
         if (!cancelled) {

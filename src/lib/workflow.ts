@@ -8,9 +8,9 @@
  * Si un paso falla se detiene, se marca el resto como "omitido" y el resultado
  * indica qué se creó y qué no.
  */
-import { normalizeForSearch } from './catalog';
-import { todayIso } from './dates';
-import { ProcoreApiError, type ProcoreClient, type ProcoreObject } from './procore';
+import { normalizeForSearch } from './catalog.js';
+import { todayIso } from './dates.js';
+import { ProcoreApiError, type ProcoreClient, type ProcoreObject } from './procore.js';
 import {
   INSPECTION_NAME,
   SCHEDULE_NAME,
@@ -30,8 +30,8 @@ import {
   resolveProjectEndDate,
   scheduleWebUrl,
   templateWebUrl,
-} from './procoreSpec';
-import type { PlannedSection } from './selection';
+} from './procoreSpec.js';
+import type { PlannedSection } from './selection.js';
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 

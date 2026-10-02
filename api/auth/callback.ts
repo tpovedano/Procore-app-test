@@ -4,11 +4,11 @@
  * servidor) y entrega al iframe una sesión cifrada a través de la ventana
  * emergente (/auth-complete.html, en el fragmento #, que no se envía a servidores).
  */
-import { getConfig } from '../_lib/env';
-import { cookie, readCookie, redirect } from '../_lib/http';
-import { exchangeCode } from '../_lib/procoreServer';
-import { SESSION_TTL_MS, safeEqual, seal } from '../_lib/session';
-import { STATE_COOKIE } from './login';
+import { getConfig } from '../_lib/env.js';
+import { cookie, readCookie, redirect } from '../_lib/http.js';
+import { exchangeCode } from '../_lib/procoreServer.js';
+import { SESSION_TTL_MS, safeEqual, seal } from '../_lib/session.js';
+import { STATE_COOKIE } from './login.js';
 
 function done(request: Request, fragment: Record<string, string>): Response {
   const clear = cookie(request, STATE_COOKIE, '', { maxAge: 0, path: '/api/auth' });

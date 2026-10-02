@@ -10,11 +10,11 @@
  * 5 s) y el trabajo sigue con waitUntil. Sin usuario → token Client Credentials (DMSA).
  */
 import { waitUntil } from '@vercel/functions';
-import { createProcoreClient } from '../../src/lib/procore';
-import { isAuthorizedWebhook, isProjectChangeEvent, parseWebhookEvent, syncScheduleEndDate } from '../../src/lib/webhook';
-import { getConfig, isDryRun } from '../_lib/env';
-import { json, readJson } from '../_lib/http';
-import { clientCredentialsToken, serverTransport } from '../_lib/procoreServer';
+import { createProcoreClient } from '../../src/lib/procore.js';
+import { isAuthorizedWebhook, isProjectChangeEvent, parseWebhookEvent, syncScheduleEndDate } from '../../src/lib/webhook.js';
+import { getConfig, isDryRun } from '../_lib/env.js';
+import { json, readJson } from '../_lib/http.js';
+import { clientCredentialsToken, serverTransport } from '../_lib/procoreServer.js';
 
 /** Deduplicación best-effort en memoria (sin BD). La operación es idempotente de todos modos. */
 const seen = new Set<string>();

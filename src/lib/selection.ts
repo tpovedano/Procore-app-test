@@ -1,7 +1,7 @@
 /**
  * Estado de selección y validación de valores objetivo (lógica pura, sin React).
  */
-import { itemName, type Catalog, type CatalogDomain, type CatalogElement, type ValueType } from './catalog';
+import { itemName, type Catalog, type CatalogDomain, type CatalogElement, type ValueType } from './catalog.js';
 
 /** elementId → valor objetivo tal como lo escribe el usuario. Solo contiene elementos marcados. */
 export type Selection = Readonly<Record<string, string>>;

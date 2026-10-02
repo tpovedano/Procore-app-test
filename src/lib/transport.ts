@@ -3,7 +3,7 @@
  * único que ve el access token. La sesión llega cifrada (opaca para el cliente)
  * y solo vive en memoria.
  */
-import { ProcoreApiError, type ApiRequest, type ApiResponse, type Transport } from './procore';
+import { ProcoreApiError, type ApiRequest, type ApiResponse, type Transport } from './procore.js';
 
 export interface ProxyTransportOptions {
   companyId: string;

@@ -6,8 +6,8 @@
  * Procore no firma los webhooks: la autenticidad se comprueba con la cabecera
  * configurada en el hook (destination_headers → Authorization: Bearer <secreto>).
  */
-import { normalizeForSearch } from './catalog';
-import type { ProcoreClient } from './procore';
+import { normalizeForSearch } from './catalog.js';
+import type { ProcoreClient } from './procore.js';
 import {
   PROJECT_WEBHOOK_RESOURCES,
   SCHEDULE_NAME,
@@ -16,7 +16,7 @@ import {
   extractName,
   extractScheduleEndDate,
   resolveProjectEndDate,
-} from './procoreSpec';
+} from './procoreSpec.js';
 
 export interface WebhookEvent {
   id: string | null;
