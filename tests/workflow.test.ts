@@ -168,10 +168,13 @@ describe('errores parciales', () => {
     expect(result.summary.join(' ')).toMatch(/Falló el paso "Inspección planificada trimestral"/);
   });
 
-  it('si falla un ítem de la plantilla, no se crea la inspección ni la planificada', async () => {
-    let n = 0;
-    const { t } = fakeTransport((req) => {
-      if (req.path.endsWith('/items') && ++n === 2) return new ProcoreApiError('Item inválido', 422);
+  it('si falla un ítem de la plantilla, no se crea la inspección ni la planificada y se borra la plantilla', async () => {
+    const { t, calls } = fakeTransport((req) => {
+      // Procore rechaza siempre el 2.º ítem, con cualquier variante de cuerpo.
+      const body = JSON.stringify(req.body ?? {});
+      if (req.method === 'POST' && req.path.endsWith('/items') && body.includes('Horas de formación')) {
+        return new ProcoreApiError('Item inválido', 422);
+      }
       return undefined;
     });
     const result = await execute({
@@ -183,9 +186,15 @@ describe('errores parciales', () => {
       reuseExisting: false,
       webBase: WEB,
       today: TODAY,
+      sleep: async () => {},
     });
     expect(result.steps.map((s) => s.status)).toEqual(['failed', 'skipped', 'skipped', 'skipped']);
-    expect(result.summary[0]).toMatch(/incompleta: 1 de 3 ítems/);
+    expect(result.summary[0]).toMatch(/incompleta \(1 de 3 ítems\) y se eliminó/);
     expect(result.steps[0]!.detail).toMatch(/rechazó los datos/);
+    // Se probaron las 4 variantes de cuerpo del ítem antes de rendirse, y se borró la plantilla.
+    const failedItemPosts = calls.filter((c) => c.method === 'POST' && JSON.stringify(c.body).includes('Horas de formación'));
+    expect(failedItemPosts).toHaveLength(4);
+    expect(calls.some((c) => c.method === 'DELETE' && /\/projects\/20\/checklist\/list_templates\/\d+$/.test(c.path))).toBe(true);
+    expect(calls.some((c) => c.path.endsWith('/checklist/lists') && c.method === 'POST')).toBe(false);
   });
 });

@@ -11,17 +11,21 @@
 import { normalizeForSearch } from './catalog.js';
 import { todayIso } from './dates.js';
 import { ProcoreApiError, type ProcoreClient, type ProcoreObject } from './procore.js';
+import { DiscoveryError, describeTried, findFirst, postFirstAccepted, preferFirst } from './adaptive.js';
 import {
+  CANDIDATES,
   INSPECTION_NAME,
   SCHEDULE_NAME,
   TEMPLATE_NAME,
   buildChecklistPayload,
-  buildItemPayload,
-  buildItemResponsePayload,
   buildScheduleEndDatePatch,
   buildSchedulePayload,
-  buildSectionPayload,
   buildTemplatePayload,
+  itemBodies,
+  itemResponseBodies,
+  sectionBodies,
+  type Candidate,
+  type ChecklistItemRef,
   checklistWebUrl,
   extractChecklistItems,
   extractId,
@@ -112,6 +116,9 @@ export function describeError(e: unknown): string {
           ? `Procore no está disponible ahora mismo (${e.status})${where}.`
           : `Error ${e.status}${where}: ${detail || e.message}`;
     }
+  }
+  if (e instanceof DiscoveryError) {
+    return `No se encontró la ruta de la API para este paso (${describeTried(e.tried)}). Usa "Diagnóstico de API" y comparte el informe.`;
   }
   if (e instanceof Error) return e.message;
   return 'Error desconocido.';
@@ -245,6 +252,42 @@ async function findCreatedTemplate(
   return null;
 }
 
+/** Intenta borrar la plantilla creada si su creación quedó incompleta. Devuelve true si se borró. */
+async function deleteTemplate(
+  client: ProcoreClient,
+  companyId: string,
+  projectId: string,
+  templateId: string,
+): Promise<boolean> {
+  for (const c of CANDIDATES.templateDelete(companyId, projectId, templateId)) {
+    try {
+      await client.deleteAt(c);
+      return true;
+    } catch {
+      /* se prueba la siguiente ruta */
+    }
+  }
+  return false;
+}
+
+/** Ítems de una inspección: de "show" (sections[].items[]) o, si no vienen, del listado de ítems. */
+async function readChecklistItems(
+  client: ProcoreClient,
+  projectId: string,
+  listId: string,
+  sleep: (ms: number) => Promise<void>,
+): Promise<ChecklistItemRef[]> {
+  const shown = await findFirst(client, CANDIDATES.checklistShow(projectId, listId), sleep, PROPAGATION_DELAYS_MS);
+  const fromShow = extractChecklistItems(shown.data);
+  if (fromShow.length > 0) return fromShow;
+  try {
+    const listed = await findFirst(client, CANDIDATES.checklistItems(projectId, listId), sleep, []);
+    return extractChecklistItems(Array.isArray(listed.data) ? { items: listed.data } : listed.data);
+  } catch {
+    return [];
+  }
+}
+
 export async function execute(input: ExecuteInput): Promise<ExecuteResult> {
   const { client, companyId, projectId, sections, prepared, webBase } = input;
   const reuse = input.reuseExisting;
@@ -290,27 +333,44 @@ export async function execute(input: ExecuteInput): Promise<ExecuteResult> {
       templateId = id;
       const totalItems = sections.reduce((n, s) => n + s.items.length, 0);
       let createdItems = 0;
+      let untypedItems = 0;
       try {
+        // Localiza (con GET, sin efectos) la colección de secciones de la plantilla recién creada.
+        const sectionsCol = (
+          await findFirst(client, CANDIDATES.templateSections(companyId, projectId, templateId), sleep, PROPAGATION_DELAYS_MS)
+        ).candidate;
+        let sectionBodyPref = 0;
+        let itemBodyPref = 0;
         for (const [si, section] of sections.entries()) {
-          const sec = await retry(() =>
-            client.createTemplateSection(companyId, templateId, buildSectionPayload(section.name, si + 1)),
-          );
-          const sectionId = extractId(sec);
+          const secVariants = preferFirst(sectionBodies(section.name, si + 1), sectionBodyPref);
+          const sec = await retry(() => postFirstAccepted(client, [sectionsCol], secVariants.map((v) => v.item)));
+          sectionBodyPref = secVariants[sec.bodyIndex]!.originalIndex;
+          const sectionId = extractId(sec.data);
           if (!sectionId) throw new Error(`Procore no devolvió el id de la sección "${section.name}".`);
+          const itemsCols: Candidate[] = CANDIDATES.templateItems(sectionsCol, sectionId);
           for (const [ii, item] of section.items.entries()) {
-            await retry(() => client.createTemplateItem(companyId, templateId, sectionId, buildItemPayload(item, ii + 1)));
+            const variants = preferFirst(itemBodies(item, ii + 1), itemBodyPref);
+            const res = await retry(() => postFirstAccepted(client, itemsCols, variants.map((v) => v.item.body)));
+            const chosen = variants[res.bodyIndex]!;
+            itemBodyPref = chosen.originalIndex;
+            if (!chosen.item.typed) untypedItems++;
             createdItems++;
           }
         }
       } catch (e) {
+        const cleaned = await deleteTemplate(client, companyId, projectId, templateId);
         summary.push(
-          `Plantilla creada (id ${templateId}) pero incompleta: ${createdItems} de ${totalItems} ítems. Revísala o elimínala en Procore.`,
+          cleaned
+            ? `La plantilla quedó incompleta (${createdItems} de ${totalItems} ítems) y se eliminó automáticamente para no dejar restos.`
+            : `Plantilla creada (id ${templateId}) pero incompleta: ${createdItems} de ${totalItems} ítems. Elimínala en Procore antes de reintentar.`,
         );
         throw e;
       }
       update('template', {
-        status: 'done',
-        detail: `${sections.length} secciones, ${totalItems} ítems.`,
+        status: untypedItems > 0 ? 'warning' : 'done',
+        detail:
+          `${sections.length} secciones, ${totalItems} ítems.` +
+          (untypedItems > 0 ? ` ${untypedItems} ítems sin tipo número/texto: Procore rechazó el campo de tipo.` : ''),
         url: templateWebUrl(webBase, projectId, templateId),
       });
       summary.push(`Plantilla creada (id ${templateId}) con ${sections.length} secciones y ${totalItems} ítems.`);
@@ -329,8 +389,10 @@ export async function execute(input: ExecuteInput): Promise<ExecuteResult> {
       });
       summary.push(`Inspección "${INSPECTION_NAME}" reutilizada (id ${listId}).`);
     } else {
-      const list = await retry(() => client.createChecklist(projectId, buildChecklistPayload({ projectId, templateId })));
-      const id = extractId(list);
+      const created = await retry(() =>
+        postFirstAccepted(client, CANDIDATES.checklistCreate(projectId), [buildChecklistPayload({ projectId, templateId })]),
+      );
+      const id = extractId(created.data);
       if (!id) throw new Error('Procore no devolvió el id de la inspección.');
       listId = id;
       update('inspection', { status: 'done', url: checklistWebUrl(webBase, projectId, listId) });
@@ -340,11 +402,12 @@ export async function execute(input: ExecuteInput): Promise<ExecuteResult> {
     // 3. Valores objetivo como respuesta de cada ítem (emparejados por nombre).
     current = 'responses';
     update('responses', { status: 'running' });
-    const detail = await retry(() => client.getChecklist(projectId, listId));
-    const listItems = extractChecklistItems(detail);
+    const listItems = await readChecklistItems(client, projectId, listId, sleep);
     const planned = sections.flatMap((s) => s.items.map((it) => ({ ...it, sectionName: s.name })));
     let written = 0;
     const missing: string[] = [];
+    let responseTargetPref = 0;
+    let responseBodyPref = 0;
     for (const p of planned) {
       const match =
         listItems.find((li) => sameName(li.name, p.name) && (li.sectionName === null || sameName(li.sectionName, p.sectionName))) ??
@@ -353,7 +416,15 @@ export async function execute(input: ExecuteInput): Promise<ExecuteResult> {
         missing.push(p.name);
         continue;
       }
-      await client.createItemResponse(projectId, listId, match.id, buildItemResponsePayload(p.valueType, p.target));
+      const targets = preferFirst(CANDIDATES.itemResponses(projectId, listId, match.id), responseTargetPref);
+      const bodies = preferFirst(itemResponseBodies(p.valueType, p.target), responseBodyPref);
+      const res = await postFirstAccepted(
+        client,
+        targets.map((t) => t.item),
+        bodies.map((b) => b.item),
+      );
+      responseTargetPref = targets[targets.findIndex((t) => t.item === res.candidate)]!.originalIndex;
+      responseBodyPref = bodies[res.bodyIndex]!.originalIndex;
       written++;
     }
     if (written === 0 && planned.length > 0) {

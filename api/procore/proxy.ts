@@ -10,7 +10,7 @@ import { isAllowedOrigin, json, preflight, readJson } from '../_lib/http.js';
 import { callProcore, parseProcoreResponse, refreshAccessToken } from '../_lib/procoreServer.js';
 import { seal, unseal, type SessionData } from '../_lib/session.js';
 
-const METHODS = new Set<HttpMethod>(['GET', 'POST', 'PATCH']);
+const METHODS = new Set<HttpMethod>(['GET', 'POST', 'PATCH', 'DELETE']);
 const QUERY_KEY = /^[a-z_]{1,40}$/;
 
 interface ProxyBody {
@@ -38,7 +38,7 @@ function validate(raw: unknown): ProxyBody | string {
       query[k] = v as string | number;
     }
   }
-  if (r.method === 'GET' && r.body !== undefined) return 'GET no admite cuerpo.';
+  if ((r.method === 'GET' || r.method === 'DELETE') && r.body !== undefined) return `${r.method} no admite cuerpo.`;
   return { method: r.method as HttpMethod, path: r.path, query, body: r.body, companyId: r.companyId };
 }
 

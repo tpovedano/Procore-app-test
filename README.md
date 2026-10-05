@@ -126,6 +126,13 @@ npm run dev               # http://localhost:5173 (Vite + funciones /api servida
    - **Type:** *Side Panel*.
    - **URL:** `https://<tu-dominio>/`. Como alternativa al `postMessage`, puedes añadir `?companyId={{procore.company.id}}&projectId={{procore.project.id}}`.
    - **Side Panel Views:** elige las vistas donde estará disponible la app. Según la *Side Panel View Key Reference*, la herramienta Inspections solo ofrece **`inspections.detail`** (`/:project_id/project/checklists/lists/:id`). Puedes añadir otras vistas de proyecto según necesites.
+
+   > ⚠️ **Limitación de Procore:** no existe una vista de panel lateral para la **lista** de Inspecciones (la pestaña principal); solo para el detalle de una inspección. Por eso el panel lateral no puede aparecer antes de abrir una inspección.
+   > Para tener la app disponible **desde la pestaña principal**, añade también un componente **Full Screen** (paso siguiente). Se abre desde el menú **Apps** del proyecto, en cualquier pantalla, incluida Inspecciones.
+
+   **Componente Full Screen (recomendado además del Side Panel):** *Add Component → Type: Full Screen*, con la URL
+   `https://<tu-dominio>/?companyId={{procore.company.id}}&projectId={{procore.project.id}}`.
+   El contexto llega por la URL interpolada (en Full Screen no hay mensaje `setup`). La app se centra con un ancho máximo para verse bien a pantalla completa.
 3. **Permisos de herramientas** (componente de datos o permisos de la app):
    - **Inspections:** *Admin* o *Standard*, para crear plantillas, inspecciones y planificadas. **Verifica cuál exige cada endpoint.**
    - **Projects** (lectura del proyecto) y, si usas el webhook, **Webhooks API**: *Standard*.
@@ -190,7 +197,9 @@ POST /rest/v1.0/webhooks/hooks/{hook_id}/triggers
 1. En el Developer Portal, abre tu app y ve a **Install App** con la versión *Ready for Testing* en tu **Developer Sandbox** (el *Sandbox App Version Key* solo sirve ahí).
 2. En el sandbox (`https://sandbox.procore.com`), abre el proyecto *1234 – Sandbox Test Project*.
 3. **Pon una fecha de finalización** al proyecto (*Admin del proyecto → General*). El sandbox no siempre trae una.
-4. Abre una inspección cualquiera (vista `inspections.detail`) y lanza la app desde el dock derecho.
+4. Lanza la app:
+   - **Desde la pestaña principal de Inspecciones (o cualquier pantalla del proyecto):** menú **Apps** (arriba a la derecha) → la app (componente Full Screen).
+   - **Desde el detalle de una inspección:** dock derecho (componente Side Panel, vista `inspections.detail`).
 5. Pulsa **Iniciar sesión con Procore**: se abre una ventana emergente. Si no aparece, permite las ventanas emergentes.
 6. Para probar en un *On-Demand* o *Monthly Sandbox* de un cliente, usa la **versión de producción** y las credenciales de producción.
 
@@ -228,18 +237,23 @@ POST /rest/v1.0/webhooks/hooks/{hook_id}/triggers
 
 ## TODOs pendientes de verificar contra la API
 
+> **Descubrimiento automático.** Como la referencia REST no se pudo consultar, las rutas de secciones, ítems, inspección y respuestas se descubren en tiempo de ejecución (`src/lib/adaptive.ts`):
+> primero se localiza la colección con **GET** (sin efectos) y después se hace el **POST**; un 404 pasa a la siguiente ruta y un 400/422 a la siguiente variante de cuerpo (ninguno crea nada). Lo que funciona se reutiliza en las siguientes llamadas.
+> Si la plantilla queda incompleta, la app intenta **borrarla** para no dejar restos.
+> En el panel, **Herramientas de soporte → Diagnóstico de API** hace solo GET y genera un informe copiable con las rutas que existen en tu cuenta y ejemplos reales de respuesta: con él se pueden fijar las rutas definitivas dejando una sola candidata en `CANDIDATES`.
+
 Todos están en **`src/lib/procoreSpec.ts`**. Cada punto se corrige en una sola función o constante.
 
 | # | Qué verificar | Dónde (`procoreSpec.ts`) | Supuesto actual |
 | --- | --- | --- | --- |
 | 1 | Ruta de "Show Project" y **campo de fecha fin** | `ENDPOINTS.showProject`, `PROJECT_END_DATE_FIELDS` | `GET /rest/v1.0/projects/{id}?company_id=`; prueba primero `completion_date` y luego `projected_finish_date` |
 | 2 | List y Create de **Project Checklist Templates** | `paths.projectTemplates`, `buildTemplatePayload` | `/rest/v1.0/projects/{pid}/checklist/list_templates`, cuerpo `{ list_template: { name, description } }` |
-| 3 | Crear **sección** de plantilla | `paths.templateSections`, `buildSectionPayload` | La ruta de proyecto devolvió **404** en sandbox. Se usa *Company Checklist Template Sections*: `POST /rest/v1.0/companies/{cid}/checklist/list_templates/{tid}/sections` con el id de la plantilla de proyecto; cuerpo `{ section: { name, position } }` (pendiente de confirmar) |
-| 4 | Crear **ítem** de plantilla | `paths.templateItems`, `buildItemPayload` | `/rest/v1.0/companies/{cid}/checklist/list_templates/{tid}/sections/{sid}/items`, cuerpo `{ item: { name, position, … } }` |
+| 3 | Crear **sección** de plantilla | `CANDIDATES.templateSections`, `sectionBodies()` | **Descubrimiento automático**: GET a 3 rutas candidatas (company → project → `/checklist/list_templates/{tid}/sections`) y POST en la que exista; cuerpo `{ section: {…} }` o plano. La de proyecto devolvió 404 en sandbox |
+| 4 | Crear **ítem** de plantilla | `CANDIDATES.templateItems`, `itemBodies()` | `{raíz de secciones}/{sid}/items`; 4 variantes de cuerpo (envuelto/plano, con/sin tipo) |
 | 5 | **Tipo de ítem** número/texto (*Checklist Item Types*) | `itemTypeFields()` | `{ item_type: 'number' \| 'text' }` |
-| 6 | Cuerpo de **Create Checklist** desde plantilla | `buildChecklistPayload()` | `POST /rest/v1.0/checklist/lists?project_id=`, cuerpo `{ project_id, list_template_id, list: { name } }` |
-| 7 | **Show Checklist** devuelve las secciones con sus ítems | `paths.checklist`, `extractChecklistItems()` | `{ sections: [{ name, items: [{ id, name }] }] }` |
-| 8 | **Checklist Item Responses**: ruta y formato | `paths.itemResponses`, `buildItemResponsePayload()` | `POST …/lists/{lid}/items/{iid}/item_responses`, cuerpo `{ item_response: { number_value \| text_value } }` |
+| 6 | Cuerpo de **Create Checklist** desde plantilla | `CANDIDATES.checklistCreate`, `buildChecklistPayload()` | `POST /rest/v1.0/checklist/lists?project_id=` y, si da 404, `/projects/{pid}/checklist/lists`; cuerpo `{ project_id, list_template_id, list: { name } }` |
+| 7 | **Show Checklist** devuelve las secciones con sus ítems | `CANDIDATES.checklistShow`, `CANDIDATES.checklistItems`, `extractChecklistItems()` | `{ sections: [{ name, items: [{ id, name }] }] }`; si no trae ítems, se listan aparte |
+| 8 | **Checklist Item Responses**: ruta y formato | `CANDIDATES.itemResponses`, `itemResponseBodies()` | 3 rutas candidatas; cuerpo `{ item_response: { number_value \| text_value } }` o plano |
 | 9 | **Checklist Schedules**: List, Create y Update | `paths.schedules`, `paths.schedule`, `buildSchedulePayload()`, `buildScheduleEndDatePatch()` | `{ schedule: { name, list_template_id, start_date, end_date, … } }` |
 | 10 | **Periodicidad trimestral** del schedule | `quarterlyRecurrenceFields()` | `{ frequency: 'monthly', interval: 3, day_of_month }` |
 | 11 | Campo `end_date` en la respuesta del schedule | `extractScheduleEndDate()` | `end_date` |

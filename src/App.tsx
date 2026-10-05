@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import rawCatalog from './catalog.json';
 import { CreateBar } from './components/CreateBar';
+import { DiagnosticsPanel } from './components/DiagnosticsPanel';
 import { DomainAccordion } from './components/DomainAccordion';
 import { ApiLog } from './components/ApiLog';
 import { DuplicateDialog } from './components/DuplicateDialog';
@@ -227,7 +228,8 @@ function Main({ config, context, catalog }: MainProps) {
   }
 
   return (
-    <div className="flex min-h-screen flex-col">
+    // Ancho máximo centrado: en el Side Panel (400 px) no cambia nada; en Full Screen evita líneas larguísimas.
+    <div className="mx-auto flex min-h-screen w-full max-w-2xl flex-col sm:border-x sm:border-slate-200">
       <Header
         projectName={projectName}
         userName={userName}
@@ -372,6 +374,7 @@ function Workspace({ catalog, client, context, webBase, dryRun, dryLog, clearDry
         )}
 
         <ApiLog entries={dryLog} dryRun={dryRun} />
+        {!dryRun && <DiagnosticsPanel client={client} companyId={context.companyId} projectId={context.projectId} />}
       </main>
 
       {!showProgress && (

@@ -107,7 +107,9 @@ describe('allowlist del proxy', () => {
     expect(isAllowedRequest('POST', '/rest/v1.0/projects/123/checklist/schedules')).toBe(true);
     expect(isAllowedRequest('POST', '/rest/v1.0/companies/9/checklist/list_templates/2945710/sections')).toBe(true);
     expect(isAllowedRequest('POST', '/rest/v1.0/companies/9/checklist/list_templates/1/sections/2/items')).toBe(true);
-    expect(isAllowedRequest('POST', '/rest/v1.0/projects/9/checklist/list_templates/1/sections')).toBe(false);
+    // Candidata de descubrimiento (en sandbox respondió 404, pero se permite probarla).
+    expect(isAllowedRequest('POST', '/rest/v1.0/projects/9/checklist/list_templates/1/sections')).toBe(true);
+    expect(isAllowedRequest('DELETE', '/rest/v1.0/projects/9/checklist/lists/1')).toBe(false);
     expect(isAllowedRequest('DELETE', '/rest/v1.0/projects/123')).toBe(false);
     expect(isAllowedRequest('GET', '/rest/v1.0/projects/abc')).toBe(false);
     expect(isAllowedRequest('GET', '/rest/v1.0/projects/1/../companies')).toBe(false);

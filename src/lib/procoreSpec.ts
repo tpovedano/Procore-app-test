@@ -27,7 +27,7 @@ export const SCHEDULE_NAME = 'Medición trimestral de objetivos';
 
 // ─── Endpoints ────────────────────────────────────────────────────────────────
 
-export type HttpMethod = 'GET' | 'POST' | 'PATCH';
+export type HttpMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE';
 type Id = number | string;
 
 export interface EndpointSpec {
@@ -131,36 +131,123 @@ export const paths = {
   me: () => '/rest/v1.0/me',
   showProject: (projectId: Id) => `/rest/v1.0/projects/${enc(projectId)}`,
   projectTemplates: (projectId: Id) => `/rest/v1.0/projects/${enc(projectId)}/checklist/list_templates`,
-  // Las secciones e ítems de plantilla se crean con los endpoints de COMPAÑÍA (los de proyecto no existen).
-  templateSections: (companyId: Id, templateId: Id) =>
-    `/rest/v1.0/companies/${enc(companyId)}/checklist/list_templates/${enc(templateId)}/sections`,
-  templateItems: (companyId: Id, templateId: Id, sectionId: Id) =>
-    `/rest/v1.0/companies/${enc(companyId)}/checklist/list_templates/${enc(templateId)}/sections/${enc(sectionId)}/items`,
   checklists: () => '/rest/v1.0/checklist/lists',
-  checklist: (listId: Id) => `/rest/v1.0/checklist/lists/${enc(listId)}`,
-  itemResponses: (listId: Id, itemId: Id) =>
-    `/rest/v1.0/checklist/lists/${enc(listId)}/items/${enc(itemId)}/item_responses`,
   schedules: (projectId: Id) => `/rest/v1.0/projects/${enc(projectId)}/checklist/schedules`,
   schedule: (projectId: Id, scheduleId: Id) =>
     `/rest/v1.0/projects/${enc(projectId)}/checklist/schedules/${enc(scheduleId)}`,
 };
 
+// ─── Rutas candidatas (descubrimiento) ───────────────────────────────────────
+//
+// Las rutas de secciones, ítems, inspección y respuestas NO se han podido
+// verificar contra la referencia. En sandbox:
+//   · /projects/{pid}/checklist/list_templates/{tid}/sections → 404.
+//   · Existe "Company Checklist Template Sections" (POST con {list_template_id}).
+// La app prueba estas candidatas EN ORDEN: primero con GET (sin efectos) para
+// saber qué colección existe; después hace el POST en la que respondió 2xx.
+// Para fijar una ruta definitiva, basta con dejar una sola candidata.
+
+export interface Candidate {
+  path: string;
+  query?: Record<string, string | number>;
+}
+
+export const CANDIDATES = {
+  /** Colección de secciones de una plantilla. */
+  templateSections: (companyId: Id, projectId: Id, templateId: Id): Candidate[] => [
+    { path: `/rest/v1.0/companies/${enc(companyId)}/checklist/list_templates/${enc(templateId)}/sections` },
+    { path: `/rest/v1.0/projects/${enc(projectId)}/checklist/list_templates/${enc(templateId)}/sections` },
+    { path: `/rest/v1.0/checklist/list_templates/${enc(templateId)}/sections`, query: { project_id: String(projectId) } },
+  ],
+  /** Colección de ítems de una sección, bajo la misma raíz que funcionó para secciones. */
+  templateItems: (sections: Candidate, sectionId: Id): Candidate[] => [
+    { path: `${sections.path}/${enc(sectionId)}/items`, query: sections.query },
+  ],
+  /** Borrado de la plantilla si su creación queda incompleta. */
+  templateDelete: (companyId: Id, projectId: Id, templateId: Id): Candidate[] => [
+    { path: `/rest/v1.0/projects/${enc(projectId)}/checklist/list_templates/${enc(templateId)}` },
+    { path: `/rest/v1.0/companies/${enc(companyId)}/checklist/list_templates/${enc(templateId)}` },
+  ],
+  /** Crear inspección: la ruta del enunciado y la variante con proyecto en la ruta. */
+  checklistCreate: (projectId: Id): Candidate[] => [
+    { path: '/rest/v1.0/checklist/lists', query: { project_id: String(projectId) } },
+    { path: `/rest/v1.0/projects/${enc(projectId)}/checklist/lists` },
+  ],
+  /** Leer una inspección (para obtener los ids de sus ítems). */
+  checklistShow: (projectId: Id, listId: Id): Candidate[] => [
+    { path: `/rest/v1.0/checklist/lists/${enc(listId)}`, query: { project_id: String(projectId) } },
+    { path: `/rest/v1.0/projects/${enc(projectId)}/checklist/lists/${enc(listId)}` },
+  ],
+  /** Listar ítems de una inspección, si "show" no los incluye. */
+  checklistItems: (projectId: Id, listId: Id): Candidate[] => [
+    { path: `/rest/v1.0/checklist/lists/${enc(listId)}/items`, query: { project_id: String(projectId) } },
+    { path: `/rest/v1.0/projects/${enc(projectId)}/checklist/lists/${enc(listId)}/items` },
+  ],
+  /** Respuesta de un ítem de la inspección. */
+  itemResponses: (projectId: Id, listId: Id, itemId: Id): Candidate[] => [
+    {
+      path: `/rest/v1.0/checklist/lists/${enc(listId)}/items/${enc(itemId)}/item_responses`,
+      query: { project_id: String(projectId) },
+    },
+    { path: `/rest/v1.0/checklist/items/${enc(itemId)}/item_responses`, query: { project_id: String(projectId) } },
+    { path: `/rest/v1.0/projects/${enc(projectId)}/checklist/lists/${enc(listId)}/items/${enc(itemId)}/item_responses` },
+  ],
+};
+
+/** Variantes de cuerpo: envuelto por tipo (convención de Procore v1.0) y plano. */
+export function sectionBodies(name: string, position: number): Record<string, unknown>[] {
+  return [{ section: { name, position } }, { name, position }];
+}
+
+/**
+ * Variantes de cuerpo de ítem. Si Procore rechaza el campo de tipo
+ * (TODO(verify) Checklist Item Types), se crea el ítem sin tipo y se avisa.
+ */
+export function itemBodies(
+  item: Pick<PlannedItem, 'name' | 'valueType'>,
+  position: number,
+): { body: Record<string, unknown>; typed: boolean }[] {
+  const typeFields = itemTypeFields(item.valueType);
+  return [
+    { body: { item: { name: item.name, position, ...typeFields } }, typed: true },
+    { body: { name: item.name, position, ...typeFields }, typed: true },
+    { body: { item: { name: item.name, position } }, typed: false },
+    { body: { name: item.name, position }, typed: false },
+  ];
+}
+
+export function itemResponseBodies(valueType: ValueType, value: number | string): Record<string, unknown>[] {
+  const field = valueType === 'number' ? { number_value: Number(value) } : { text_value: String(value) };
+  return [{ item_response: field }, field];
+}
+
 /**
  * Allowlist del proxy serverless: solo estas combinaciones método+ruta pueden
  * llegar a Procore. Los ids deben ser numéricos.
+ *
+ * - GET: cualquier recurso de checklist/inspecciones (solo lectura), para el
+ *   descubrimiento de rutas y el diagnóstico.
+ * - POST/PATCH/DELETE: solo las rutas candidatas de creación (ver CANDIDATES)
+ *   y el borrado de la plantilla creada por la app si su creación falla.
  */
+const SEG = '(?:\\/(?:[a-z_]+|\\d+))*';
+const SCOPE = '(?:projects|companies)\\/\\d+';
 export const PROXY_ALLOWLIST: ReadonlyArray<{ method: HttpMethod; pattern: RegExp }> = [
   { method: 'GET', pattern: /^\/rest\/v1\.0\/me$/ },
   { method: 'GET', pattern: /^\/rest\/v1\.0\/projects\/\d+$/ },
-  { method: 'GET', pattern: /^\/rest\/v1\.0\/projects\/\d+\/checklist\/list_templates$/ },
+  { method: 'GET', pattern: new RegExp(`^\\/rest\\/v1\\.0\\/${SCOPE}\\/checklist${SEG}$`) },
+  { method: 'GET', pattern: new RegExp(`^\\/rest\\/v1\\.0\\/checklist${SEG}$`) },
   { method: 'POST', pattern: /^\/rest\/v1\.0\/projects\/\d+\/checklist\/list_templates$/ },
-  { method: 'POST', pattern: /^\/rest\/v1\.0\/companies\/\d+\/checklist\/list_templates\/\d+\/sections$/ },
-  { method: 'POST', pattern: /^\/rest\/v1\.0\/companies\/\d+\/checklist\/list_templates\/\d+\/sections\/\d+\/items$/ },
-  { method: 'GET', pattern: /^\/rest\/v1\.0\/checklist\/lists$/ },
-  { method: 'POST', pattern: /^\/rest\/v1\.0\/checklist\/lists$/ },
-  { method: 'GET', pattern: /^\/rest\/v1\.0\/checklist\/lists\/\d+$/ },
-  { method: 'POST', pattern: /^\/rest\/v1\.0\/checklist\/lists\/\d+\/items\/\d+\/item_responses$/ },
-  { method: 'GET', pattern: /^\/rest\/v1\.0\/projects\/\d+\/checklist\/schedules$/ },
+  {
+    method: 'POST',
+    pattern: /^\/rest\/v1\.0\/(?:(?:projects|companies)\/\d+\/)?checklist\/list_templates\/\d+\/sections(?:\/\d+\/items)?$/,
+  },
+  { method: 'DELETE', pattern: /^\/rest\/v1\.0\/(?:projects|companies)\/\d+\/checklist\/list_templates\/\d+$/ },
+  { method: 'POST', pattern: /^\/rest\/v1\.0\/(?:projects\/\d+\/)?checklist\/lists$/ },
+  {
+    method: 'POST',
+    pattern: /^\/rest\/v1\.0\/(?:projects\/\d+\/)?checklist\/(?:lists\/\d+\/)?items\/\d+\/item_responses$/,
+  },
   { method: 'POST', pattern: /^\/rest\/v1\.0\/projects\/\d+\/checklist\/schedules$/ },
   { method: 'PATCH', pattern: /^\/rest\/v1\.0\/projects\/\d+\/checklist\/schedules\/\d+$/ },
 ];

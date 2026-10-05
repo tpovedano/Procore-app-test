@@ -34,14 +34,21 @@ function safeOrigin(url: string): string | null {
 }
 
 /**
- * Obtiene company/project del panel lateral:
- * 1) postMessage "setup" de Procore (tras enviar "initialize" al origen del padre);
- * 2) si no llega, parámetros interpolados en la URL (companyId / projectId).
+ * Obtiene company/project:
+ * 1) parámetros interpolados en la URL (companyId / projectId), p. ej. en el componente Full Screen;
+ * 2) si no hay, postMessage "setup" de Procore (Side Panel), tras enviar "initialize" al padre.
  */
 export function useProcoreContext(): ContextState {
   const [state, setState] = useState<ContextState>({ status: 'waiting' });
 
   useEffect(() => {
+    // Componente Full Screen (o URL con parámetros interpolados por Procore): el
+    // contexto ya viene en la URL, no hace falta esperar al mensaje "setup".
+    const fromUrlNow = parseContextFromUrl(window.location.search);
+    if (fromUrlNow) {
+      setState({ status: 'ready', context: fromUrlNow });
+      return;
+    }
     let settled = false;
     const framed = window.parent !== window;
     const ancestors = Array.from(window.location.ancestorOrigins ?? []);
@@ -73,9 +80,7 @@ export function useProcoreContext(): ContextState {
 
     const timer = window.setTimeout(
       () => {
-        if (settled) return;
-        const fromUrl = parseContextFromUrl(window.location.search);
-        setState(fromUrl ? { status: 'ready', context: fromUrl } : { status: 'missing', diagnostics: { ...diagnostics } });
+        if (!settled) setState({ status: 'missing', diagnostics: { ...diagnostics } });
       },
       framed || parentOriginFromReferrer(document.referrer) ? SETUP_TIMEOUT_MS : 0,
     );

@@ -8,7 +8,7 @@
  */
 import { hasNextPage } from './retry.js';
 import { paths } from './procoreSpec.js';
-import type { HttpMethod } from './procoreSpec.js';
+import type { Candidate, HttpMethod } from './procoreSpec.js';
 
 export type Query = Record<string, string | number>;
 
@@ -90,27 +90,10 @@ export function createProcoreClient(rawTransport: Transport) {
     createProjectTemplate: (projectId: string, payload: unknown) =>
       one(transport, { method: 'POST', path: paths.projectTemplates(projectId), body: payload }),
 
-    createTemplateSection: (companyId: string, templateId: string, payload: unknown) =>
-      one(transport, { method: 'POST', path: paths.templateSections(companyId, templateId), body: payload }),
-
-    createTemplateItem: (companyId: string, templateId: string, sectionId: string, payload: unknown) =>
-      one(transport, { method: 'POST', path: paths.templateItems(companyId, templateId, sectionId), body: payload }),
-
     listChecklists: (projectId: string) => listAll(transport, paths.checklists(), { project_id: projectId }),
 
     createChecklist: (projectId: string, payload: unknown) =>
       one(transport, { method: 'POST', path: paths.checklists(), query: { project_id: projectId }, body: payload }),
-
-    getChecklist: (projectId: string, listId: string) =>
-      one(transport, { method: 'GET', path: paths.checklist(listId), query: { project_id: projectId } }),
-
-    createItemResponse: (projectId: string, listId: string, itemId: string, payload: unknown) =>
-      one(transport, {
-        method: 'POST',
-        path: paths.itemResponses(listId, itemId),
-        query: { project_id: projectId },
-        body: payload,
-      }),
 
     listSchedules: (projectId: string) => listAll(transport, paths.schedules(projectId)),
 
@@ -119,6 +102,12 @@ export function createProcoreClient(rawTransport: Transport) {
 
     updateSchedule: (projectId: string, scheduleId: string, payload: unknown) =>
       one(transport, { method: 'PATCH', path: paths.schedule(projectId, scheduleId), body: payload }),
+
+    // Peticiones sobre rutas candidatas (procoreSpec.CANDIDATES). El proxy solo
+    // deja pasar las que están en su allowlist.
+    getAt: (c: Candidate) => transport({ method: 'GET', path: c.path, query: c.query }),
+    postAt: (c: Candidate, body: unknown) => one(transport, { method: 'POST', path: c.path, query: c.query, body }),
+    deleteAt: (c: Candidate) => transport({ method: 'DELETE', path: c.path, query: c.query }),
   };
 }
 
