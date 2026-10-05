@@ -189,7 +189,7 @@ describe('errores parciales', () => {
       sleep: async () => {},
     });
     expect(result.steps.map((s) => s.status)).toEqual(['failed', 'skipped', 'skipped', 'skipped']);
-    expect(result.summary[0]).toMatch(/incompleta \(1 de 3 ítems\) y se eliminó/);
+    expect(result.summary[0]).toMatch(/quedó incompleta y se eliminó automáticamente/);
     expect(result.steps[0]!.detail).toMatch(/rechazó los datos/);
     // Se probaron las 4 variantes de cuerpo del ítem antes de rendirse, y se borró la plantilla.
     const failedItemPosts = calls.filter((c) => c.method === 'POST' && JSON.stringify(c.body).includes('Horas de formación'));

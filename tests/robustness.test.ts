@@ -84,6 +84,9 @@ describe('plantilla sin id en la respuesta', () => {
       if (req.method === 'GET' && /checklist\/lists\/\d+$/.test(req.path)) {
         return { status: 200, data: { sections: [{ name: 'Seguridad', items: [{ id: 9, name: 'Incidentes (uds)' }] }] } };
       }
+      if (req.method === 'GET' && req.path.endsWith('/sections')) {
+        return { status: 200, data: calls.some((c) => c.method === 'POST' && c.path.endsWith('/sections')) ? [{ id: 1, name: 'Seguridad' }] : [] };
+      }
       if (req.method === 'GET') return { status: 200, data: [] };
       return { status: 201, data: { id: id++ } };
     };

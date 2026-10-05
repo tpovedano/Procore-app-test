@@ -167,14 +167,27 @@ function findByName(list: ProcoreObject[], name: string): ExistingRef | undefine
   return undefined;
 }
 
-export async function findExisting(client: ProcoreClient, projectId: string): Promise<ExistingObjects> {
+export async function findExisting(
+  client: ProcoreClient,
+  projectId: string,
+  companyId?: string,
+): Promise<ExistingObjects> {
   const [templates, lists, schedules] = await Promise.all([
     client.listProjectTemplates(projectId),
     client.listChecklists(projectId),
     client.listSchedules(projectId),
   ]);
   const existing: ExistingObjects = {};
-  const t = findByName(templates, TEMPLATE_NAME);
+  let t = findByName(templates, TEMPLATE_NAME);
+  if (!t) {
+    // La plantilla puede haberse creado a nivel compañía (alternativa cuando la de proyecto no admite secciones).
+    try {
+      const r = await client.getAt(CANDIDATES.companyTemplates(companyId ?? ''));
+      if (companyId && Array.isArray(r.data)) t = findByName(r.data as ProcoreObject[], TEMPLATE_NAME);
+    } catch {
+      /* sin permisos de compañía o ruta no disponible: se ignora */
+    }
+  }
   if (t) existing.template = t;
   const i = findByName(lists, INSPECTION_NAME);
   if (i) existing.inspection = i;
@@ -204,7 +217,7 @@ export async function prepare(
       `La fecha de finalización del proyecto (${end.date}) ya pasó; no se puede planificar una medición trimestral. No se ha creado nada.`,
     );
   }
-  const existing = await findExisting(client, projectId);
+  const existing = await findExisting(client, projectId, companyId);
   return { projectName: extractName(project), endDate: end.date, endDateField: end.field, existing };
 }
 
@@ -250,6 +263,129 @@ async function findCreatedTemplate(
     if (i < PROPAGATION_DELAYS_MS.length) await sleep(PROPAGATION_DELAYS_MS[i]!);
   }
   return null;
+}
+
+export class TemplateNotPopulatedError extends Error {}
+
+type TemplateScope = 'project' | 'company';
+
+interface PopulateStats {
+  createdItems: number;
+  untypedItems: number;
+}
+
+interface PopulateCtx {
+  client: ProcoreClient;
+  companyId: string;
+  projectId: string;
+  sections: PlannedSection[];
+  sleep: (ms: number) => Promise<void>;
+  retry: <T>(fn: () => Promise<T>) => Promise<T>;
+}
+
+/** Añade a la plantilla una sección por dominio y un ítem por elemento, y verifica releyéndola. */
+async function populateTemplate(ctx: PopulateCtx, scope: TemplateScope, templateId: string): Promise<PopulateStats> {
+  const { client, companyId, projectId, sections, sleep, retry } = ctx;
+  // Localiza (con GET, sin efectos) la colección de secciones de la plantilla recién creada.
+  const sectionsCol = (
+    await findFirst(client, CANDIDATES.templateSections(companyId, projectId, templateId), sleep, PROPAGATION_DELAYS_MS)
+  ).candidate;
+  let sectionBodyPref = 0;
+  let itemBodyPref = 0;
+  let createdItems = 0;
+  let untypedItems = 0;
+  const createdSectionIds: string[] = [];
+  for (const [si, section] of sections.entries()) {
+    const secVariants = preferFirst(sectionBodies(section.name, si + 1), sectionBodyPref);
+    const sec = await retry(() => postFirstAccepted(client, [sectionsCol], secVariants.map((v) => v.item)));
+    sectionBodyPref = secVariants[sec.bodyIndex]!.originalIndex;
+    const sectionId = extractId(sec.data);
+    if (!sectionId) throw new Error(`Procore no devolvió el id de la sección "${section.name}".`);
+    createdSectionIds.push(sectionId);
+    const itemsCols: Candidate[] = CANDIDATES.templateItems(sectionsCol, sectionId);
+    for (const [ii, item] of section.items.entries()) {
+      const variants = preferFirst(itemBodies(item, ii + 1), itemBodyPref);
+      const res = await retry(() => postFirstAccepted(client, itemsCols, variants.map((v) => v.item.body)));
+      const chosen = variants[res.bodyIndex]!;
+      itemBodyPref = chosen.originalIndex;
+      if (!chosen.item.typed) untypedItems++;
+      createdItems++;
+    }
+  }
+  // Procore respondió 2xx, pero se comprueba releyendo la plantilla que las secciones
+  // existen de verdad antes de crear una inspección vacía.
+  await verifyTemplateSections(client, {
+    sectionsCol,
+    showPath:
+      scope === 'project'
+        ? `/rest/v1.0/projects/${projectId}/checklist/list_templates/${templateId}`
+        : `/rest/v1.0/companies/${companyId}/checklist/list_templates/${templateId}`,
+    templateId,
+    expected: sections.map((x) => x.name),
+    createdSectionIds,
+    sleep,
+  });
+  return { createdItems, untypedItems };
+}
+
+/** Nombres de secciones en una respuesta (lista de secciones o plantilla con sections[]). */
+function sectionNames(data: unknown): string[] {
+  const arr = Array.isArray(data)
+    ? data
+    : data && typeof data === 'object' && Array.isArray((data as { sections?: unknown }).sections)
+      ? (data as { sections: unknown[] }).sections
+      : [];
+  return arr.map((x) => extractName(x)).filter((n): n is string => n !== null);
+}
+
+function brief(data: unknown): string {
+  try {
+    const t = JSON.stringify(data);
+    return t.length > 300 ? `${t.slice(0, 300)}…` : t;
+  } catch {
+    return '[no serializable]';
+  }
+}
+
+/**
+ * Relee la plantilla (colección de secciones y detalle de la plantilla) y lanza
+ * un error explicativo si faltan secciones, aunque Procore aceptara los POST.
+ */
+async function verifyTemplateSections(
+  client: ProcoreClient,
+  args: {
+    sectionsCol: Candidate;
+    showPath: string;
+    templateId: string;
+    expected: string[];
+    createdSectionIds: string[];
+    sleep: (ms: number) => Promise<void>;
+  },
+): Promise<void> {
+  const reads: { path: string; data: unknown }[] = [];
+  let missing: string[] = args.expected;
+  for (let attempt = 0; attempt <= PROPAGATION_DELAYS_MS.length && missing.length > 0; attempt++) {
+    if (attempt > 0) await args.sleep(PROPAGATION_DELAYS_MS[attempt - 1]!);
+    reads.length = 0;
+    const found = new Set<string>();
+    for (const c of [args.sectionsCol, { path: args.showPath }]) {
+      try {
+        const r = await client.getAt(c);
+        reads.push({ path: c.path, data: r.data });
+        for (const n of sectionNames(r.data)) found.add(normalizeForSearch(n));
+      } catch (e) {
+        reads.push({ path: c.path, data: e instanceof ProcoreApiError ? `HTTP ${e.status}` : 'error' });
+      }
+    }
+    missing = args.expected.filter((n) => !found.has(normalizeForSearch(n)));
+  }
+  if (missing.length > 0) {
+    throw new TemplateNotPopulatedError(
+      `Procore aceptó la creación de ${args.createdSectionIds.length} secciones (ruta ${args.sectionsCol.path}, ids ${args.createdSectionIds.join(', ')}), ` +
+        `pero al releer la plantilla ${args.templateId} no aparecen: ${missing.join(', ')}. ` +
+        `Relectura: ${reads.map((r) => `${r.path} → ${brief(r.data)}`).join(' | ')}`,
+    );
+  }
 }
 
 /** Intenta borrar la plantilla creada si su creación quedó incompleta. Devuelve true si se borró. */
@@ -332,48 +468,53 @@ export async function execute(input: ExecuteInput): Promise<ExecuteResult> {
       }
       templateId = id;
       const totalItems = sections.reduce((n, s) => n + s.items.length, 0);
-      let createdItems = 0;
-      let untypedItems = 0;
+      const ctx = { client, companyId, projectId, sections, sleep, retry };
+      let stats: PopulateStats;
+      let scope: TemplateScope = 'project';
       try {
-        // Localiza (con GET, sin efectos) la colección de secciones de la plantilla recién creada.
-        const sectionsCol = (
-          await findFirst(client, CANDIDATES.templateSections(companyId, projectId, templateId), sleep, PROPAGATION_DELAYS_MS)
-        ).candidate;
-        let sectionBodyPref = 0;
-        let itemBodyPref = 0;
-        for (const [si, section] of sections.entries()) {
-          const secVariants = preferFirst(sectionBodies(section.name, si + 1), sectionBodyPref);
-          const sec = await retry(() => postFirstAccepted(client, [sectionsCol], secVariants.map((v) => v.item)));
-          sectionBodyPref = secVariants[sec.bodyIndex]!.originalIndex;
-          const sectionId = extractId(sec.data);
-          if (!sectionId) throw new Error(`Procore no devolvió el id de la sección "${section.name}".`);
-          const itemsCols: Candidate[] = CANDIDATES.templateItems(sectionsCol, sectionId);
-          for (const [ii, item] of section.items.entries()) {
-            const variants = preferFirst(itemBodies(item, ii + 1), itemBodyPref);
-            const res = await retry(() => postFirstAccepted(client, itemsCols, variants.map((v) => v.item.body)));
-            const chosen = variants[res.bodyIndex]!;
-            itemBodyPref = chosen.originalIndex;
-            if (!chosen.item.typed) untypedItems++;
-            createdItems++;
-          }
-        }
+        stats = await populateTemplate(ctx, 'project', templateId);
       } catch (e) {
         const cleaned = await deleteTemplate(client, companyId, projectId, templateId);
+        if (!(e instanceof TemplateNotPopulatedError)) {
+          summary.push(
+            cleaned
+              ? 'La plantilla quedó incompleta y se eliminó automáticamente para no dejar restos.'
+              : `Plantilla creada (id ${templateId}) pero incompleta. Elimínala en Procore antes de reintentar.`,
+          );
+          throw e;
+        }
+        // La API no permite añadir secciones a una plantilla de PROYECTO: se construye a nivel COMPAÑÍA,
+        // donde sí existe "Company Checklist Template Sections".
         summary.push(
-          cleaned
-            ? `La plantilla quedó incompleta (${createdItems} de ${totalItems} ítems) y se eliminó automáticamente para no dejar restos.`
-            : `Plantilla creada (id ${templateId}) pero incompleta: ${createdItems} de ${totalItems} ítems. Elimínala en Procore antes de reintentar.`,
+          `La plantilla de proyecto no admitió secciones por la API${cleaned ? ' (se eliminó)' : ` (id ${templateId}: elimínala en Procore)`}; se crea a nivel compañía.`,
         );
-        throw e;
+        scope = 'company';
+        const created = await postFirstAccepted(client, [CANDIDATES.companyTemplates(companyId)], [buildTemplatePayload()]);
+        const companyTemplateId = extractId(created.data);
+        if (!companyTemplateId) throw new Error('Procore no devolvió el id de la plantilla de compañía.');
+        templateId = companyTemplateId;
+        try {
+          stats = await populateTemplate(ctx, 'company', templateId);
+        } catch (e2) {
+          const cleaned2 = await deleteTemplate(client, companyId, projectId, templateId);
+          summary.push(
+            cleaned2
+              ? 'La plantilla de compañía quedó incompleta y se eliminó automáticamente.'
+              : `Plantilla de compañía (id ${templateId}) incompleta: elimínala en Procore (Inspecciones de compañía).`,
+          );
+          throw e2;
+        }
       }
       update('template', {
-        status: untypedItems > 0 ? 'warning' : 'done',
+        status: stats.untypedItems > 0 ? 'warning' : 'done',
         detail:
-          `${sections.length} secciones, ${totalItems} ítems.` +
-          (untypedItems > 0 ? ` ${untypedItems} ítems sin tipo número/texto: Procore rechazó el campo de tipo.` : ''),
-        url: templateWebUrl(webBase, projectId, templateId),
+          `${scope === 'company' ? 'Plantilla de compañía. ' : ''}${sections.length} secciones, ${totalItems} ítems.` +
+          (stats.untypedItems > 0 ? ` ${stats.untypedItems} ítems sin tipo número/texto: Procore rechazó el campo de tipo.` : ''),
+        url: scope === 'project' ? templateWebUrl(webBase, projectId, templateId) : undefined,
       });
-      summary.push(`Plantilla creada (id ${templateId}) con ${sections.length} secciones y ${totalItems} ítems.`);
+      summary.push(
+        `Plantilla ${scope === 'company' ? 'de compañía ' : ''}creada (id ${templateId}) con ${sections.length} secciones y ${totalItems} ítems.`,
+      );
     }
 
     // 2. Inspección "Reporte de objetivos" desde la plantilla.

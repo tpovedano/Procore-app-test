@@ -163,6 +163,8 @@ export const CANDIDATES = {
   templateItems: (sections: Candidate, sectionId: Id): Candidate[] => [
     { path: `${sections.path}/${enc(sectionId)}/items`, query: sections.query },
   ],
+  /** Plantillas de compañía (alternativa si la de proyecto no admite secciones por la API). */
+  companyTemplates: (companyId: Id): Candidate => ({ path: `/rest/v1.0/companies/${enc(companyId)}/checklist/list_templates` }),
   /** Borrado de la plantilla si su creación queda incompleta. */
   templateDelete: (companyId: Id, projectId: Id, templateId: Id): Candidate[] => [
     { path: `/rest/v1.0/projects/${enc(projectId)}/checklist/list_templates/${enc(templateId)}` },
@@ -237,7 +239,7 @@ export const PROXY_ALLOWLIST: ReadonlyArray<{ method: HttpMethod; pattern: RegEx
   { method: 'GET', pattern: /^\/rest\/v1\.0\/projects\/\d+$/ },
   { method: 'GET', pattern: new RegExp(`^\\/rest\\/v1\\.0\\/${SCOPE}\\/checklist${SEG}$`) },
   { method: 'GET', pattern: new RegExp(`^\\/rest\\/v1\\.0\\/checklist${SEG}$`) },
-  { method: 'POST', pattern: /^\/rest\/v1\.0\/projects\/\d+\/checklist\/list_templates$/ },
+  { method: 'POST', pattern: /^\/rest\/v1\.0\/(?:projects|companies)\/\d+\/checklist\/list_templates$/ },
   {
     method: 'POST',
     pattern: /^\/rest\/v1\.0\/(?:(?:projects|companies)\/\d+\/)?checklist\/list_templates\/\d+\/sections(?:\/\d+\/items)?$/,

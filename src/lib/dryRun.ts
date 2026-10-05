@@ -52,6 +52,10 @@ export function createDryRunTransport(opts: DryRunOptions = {}): Transport {
         const sections = (tplId && sectionsByTemplate.get(tplId)) || [];
         return ok({ id: Number(listMatch[1]), sections });
       }
+      const tplSections = /list_templates\/(\d+)\/sections$/.exec(p);
+      if (tplSections) return ok(sectionsByTemplate.get(tplSections[1]!) ?? []);
+      const tplShow = /checklist\/list_templates\/(\d+)$/.exec(p);
+      if (tplShow) return ok({ id: Number(tplShow[1]), sections: sectionsByTemplate.get(tplShow[1]!) ?? [] });
       return ok([]); // colecciones vacías → sin duplicados
     }
 

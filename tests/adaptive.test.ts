@@ -24,7 +24,7 @@ function strangeProcore() {
     const body = (req.body ?? {}) as Record<string, any>;
     if (m === 'POST' && p === '/rest/v1.0/projects/20/checklist/list_templates') return { status: 201, data: { id: 77 } };
     if (p === '/rest/v1.0/checklist/list_templates/77/sections') {
-      if (m === 'GET') return { status: 200, data: [] };
+      if (m === 'GET') return { status: 200, data: sections };
       if ('section' in body) throw invalid('param is missing or the value is empty: name');
       const s = { id: next++, name: body.name, items: [] };
       sections.push(s);
@@ -138,5 +138,95 @@ describe('diagnóstico de API', () => {
     expect(entries.find((e) => e.path.endsWith('/sections/7/items'))).toBeDefined();
     expect(entries.find((e) => e.path === '/rest/v1.0/checklist/lists/3')?.status).toBe(404);
     expect(entries.length).toBeGreaterThan(8);
+  });
+});
+
+describe('verificación de la plantilla', () => {
+  it('si Procore acepta las secciones pero no aparecen al releer, se detiene antes de crear la inspección', async () => {
+    const calls: ApiRequest[] = [];
+    let id = 300;
+    const t: Transport = async (req) => {
+      calls.push(req);
+      if (req.method === 'POST') return { status: 201, data: { id: id++ } }; // acepta todo…
+      if (req.method === 'DELETE') return { status: 200, data: {} };
+      if (req.path.endsWith('/sections')) return { status: 200, data: [] }; // …pero la plantilla sigue vacía
+      if (/list_templates\/\d+$/.test(req.path)) return { status: 200, data: { id: 300, sections: [] } };
+      return { status: 200, data: [] };
+    };
+    const plan = buildPlan(catalog, { inc: '1', agua: '2' });
+    if (!plan.ok) throw new Error('plan');
+    const result = await execute({
+      client: createProcoreClient(t),
+      companyId: '10',
+      projectId: '20',
+      sections: plan.sections,
+      prepared: { projectName: 'P', endDate: '2027-12-31', endDateField: 'completion_date', existing: {} },
+      reuseExisting: false,
+      webBase: 'https://sandbox.procore.com',
+      today: '2026-10-05',
+      sleep: async () => {},
+    });
+    expect(result.steps.map((s) => s.status)).toEqual(['failed', 'skipped', 'skipped', 'skipped']);
+    expect(result.steps[0]!.detail).toMatch(/aceptó la creación de 2 secciones.*no aparecen: Seguridad, Medio ambiente/);
+    expect(calls.some((c) => c.method === 'POST' && c.path.endsWith('/checklist/lists'))).toBe(false);
+    // Probó también la alternativa de compañía y borró ambas plantillas incompletas.
+    expect(calls.some((c) => c.method === 'POST' && c.path === '/rest/v1.0/companies/10/checklist/list_templates')).toBe(true);
+    expect(result.summary.join(' ')).toMatch(/se crea a nivel compañía/);
+    expect(calls.filter((c) => c.method === 'DELETE').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('si la plantilla de proyecto queda vacía, la construye a nivel compañía y crea la inspección desde ella', async () => {
+    const calls: ApiRequest[] = [];
+    let id = 400;
+    // Solo las plantillas de compañía guardan secciones (como sugiere el sandbox).
+    const companySections = new Map<string, { id: number; name: string }[]>();
+    const t: Transport = async (req) => {
+      calls.push(req);
+      const { method: m, path: p } = req;
+      const body = (req.body ?? {}) as Record<string, any>;
+      if (m === 'POST' && p === '/rest/v1.0/projects/20/checklist/list_templates') return { status: 201, data: { id: 1 } };
+      if (m === 'POST' && p === '/rest/v1.0/companies/10/checklist/list_templates') {
+        companySections.set('2', []);
+        return { status: 201, data: { id: 2 } };
+      }
+      const sec = /^\/rest\/v1\.0\/companies\/10\/checklist\/list_templates\/(\d+)\/sections$/.exec(p);
+      if (sec) {
+        const list = companySections.get(sec[1]!);
+        if (m === 'GET') return { status: 200, data: list ?? [] };
+        const s = { id: id++, name: body.section?.name };
+        list?.push(s); // en la de proyecto (id 1) "acepta" pero no guarda
+        return { status: 201, data: { id: s.id } };
+      }
+      if (m === 'POST' && p.endsWith('/items')) return { status: 201, data: { id: id++ } };
+      if (m === 'DELETE') return { status: 200, data: {} };
+      if (m === 'POST' && p === '/rest/v1.0/checklist/lists') return { status: 201, data: { id: 77 } };
+      if (m === 'GET' && p === '/rest/v1.0/checklist/lists/77') {
+        return { status: 200, data: { sections: [{ name: 'Seguridad', items: [{ id: 5, name: 'Incidentes (uds)' }] }] } };
+      }
+      if (m === 'POST' && p.endsWith('/item_responses')) return { status: 201, data: { id: id++ } };
+      if (m === 'POST' && p.endsWith('/schedules')) return { status: 201, data: { id: 9 } };
+      if (m === 'GET') return { status: 200, data: {} };
+      throw notFound();
+    };
+    const plan = buildPlan(catalog, { inc: '1' });
+    if (!plan.ok) throw new Error('plan');
+    const result = await execute({
+      client: createProcoreClient(t),
+      companyId: '10',
+      projectId: '20',
+      sections: plan.sections,
+      prepared: { projectName: 'P', endDate: '2027-12-31', endDateField: 'completion_date', existing: {} },
+      reuseExisting: false,
+      webBase: 'https://sandbox.procore.com',
+      today: '2026-10-05',
+      sleep: async () => {},
+    });
+    expect(result.ok).toBe(true);
+    expect(result.steps[0]!.detail).toMatch(/Plantilla de compañía/);
+    const createList = calls.find((c) => c.method === 'POST' && c.path === '/rest/v1.0/checklist/lists')!;
+    expect(createList.body).toMatchObject({ list_template_id: 2 });
+    const schedule = calls.find((c) => c.method === 'POST' && c.path.endsWith('/schedules'))!;
+    expect(schedule.body).toMatchObject({ schedule: { list_template_id: 2 } });
+    expect(calls.some((c) => c.method === 'DELETE' && c.path.endsWith('/list_templates/1'))).toBe(true);
   });
 });

@@ -135,6 +135,7 @@ npm run dev               # http://localhost:5173 (Vite + funciones /api servida
    El contexto llega por la URL interpolada (en Full Screen no hay mensaje `setup`). La app se centra con un ancho máximo para verse bien a pantalla completa.
 3. **Permisos de herramientas** (componente de datos o permisos de la app):
    - **Inspections:** *Admin* o *Standard*, para crear plantillas, inspecciones y planificadas. **Verifica cuál exige cada endpoint.**
+   - **Inspections a nivel de compañía (Admin):** necesario si la app tiene que construir la plantilla a nivel compañía (ver "Plantilla: proyecto → compañía" más abajo).
    - **Projects** (lectura del proyecto) y, si usas el webhook, **Webhooks API**: *Standard*.
 4. **OAuth:** registra la **Redirect URI** `https://<tu-dominio>/api/auth/callback`. Usa las *Sandbox OAuth Credentials* con las URLs de sandbox.
 5. **Webhook con client credentials (DMSA):** el webhook trabaja sin usuario, así que pide el token con `grant_type=client_credentials`. Eso requiere que la app tenga permisos de **Developer Managed Service Account** a nivel de empresa o proyecto (Inspections + Projects).
@@ -240,6 +241,8 @@ POST /rest/v1.0/webhooks/hooks/{hook_id}/triggers
 > **Descubrimiento automático.** Como la referencia REST no se pudo consultar, las rutas de secciones, ítems, inspección y respuestas se descubren en tiempo de ejecución (`src/lib/adaptive.ts`):
 > primero se localiza la colección con **GET** (sin efectos) y después se hace el **POST**; un 404 pasa a la siguiente ruta y un 400/422 a la siguiente variante de cuerpo (ninguno crea nada). Lo que funciona se reutiliza en las siguientes llamadas.
 > Si la plantilla queda incompleta, la app intenta **borrarla** para no dejar restos.
+>
+> **Plantilla: proyecto → compañía.** Tras añadir secciones e ítems, la app **relee la plantilla** para comprobar que las secciones existen (Procore puede responder 2xx sin guardarlas). En el sandbox la plantilla de **proyecto** quedaba vacía, así que, si la verificación falla, la app la borra y construye la plantilla a **nivel compañía** (`POST /companies/{cid}/checklist/list_templates` + *Company Checklist Template Sections*), y crea la inspección y la planificada con ese `list_template_id`. TODO(verify): que *Create Checklist* y *Checklist Schedules* acepten plantillas de compañía; si no, hará falta el endpoint que importa una plantilla de compañía al proyecto.
 > En el panel, **Herramientas de soporte → Diagnóstico de API** hace solo GET y genera un informe copiable con las rutas que existen en tu cuenta y ejemplos reales de respuesta: con él se pueden fijar las rutas definitivas dejando una sola candidata en `CANDIDATES`.
 
 Todos están en **`src/lib/procoreSpec.ts`**. Cada punto se corrige en una sola función o constante.
