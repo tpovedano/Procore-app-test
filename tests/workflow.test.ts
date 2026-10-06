@@ -77,7 +77,15 @@ describe('flujo completo (dry-run, endpoints de la referencia)', () => {
       { item_response: { number_value: 150 } },
     ]);
     const schedule = (posts.find((e) => e.path.endsWith('/checklist/schedules'))!.body as any).schedule;
-    expect(schedule).toMatchObject({ name: SCHEDULE_NAME, first_inspection_due_at: TODAY, ends_at: '2027-12-31', frequency: 'quarterly' });
+    // Primera medición a los 3 meses del reporte de hoy (2026-10-06 → 2027-01-06).
+    expect(schedule).toMatchObject({
+      name: SCHEDULE_NAME,
+      private: false,
+      days_created_before_due_date: 7,
+      first_inspection_due_at: '2027-01-06T12:00:00Z',
+      ends_at: '2027-12-31',
+      frequency: 'quarterly',
+    });
     const createList = posts.find((e) => e.path === '/rest/v1.0/projects/20/checklist/lists')!.body as any;
     expect(schedule.inspection_template_id).toBe(createList.list_template_id);
 
@@ -185,10 +193,8 @@ describe('duplicados y paginación', () => {
   });
 });
 
-describe('variantes no documentadas (type del ítem y frequency)', () => {
-  it('si Procore rechaza el type, crea el ítem sin type y lo avisa; prueba frecuencias hasta que una vale', async () => {
-    const { client } = dry({ id: 1, completion_date: '2027-12-31' });
-    const prepared = await prepare(client, '10', '20', TODAY);
+describe('type del ítem (no documentado en la referencia)', () => {
+  it('si Procore rechaza el type, crea el ítem sin type y lo avisa', async () => {
     const calls: ApiRequest[] = [];
     const base = createDryRunTransport({ today: TODAY });
     const t: Transport = async (req) => {
@@ -197,9 +203,6 @@ describe('variantes no documentadas (type del ítem y frequency)', () => {
       if (req.method === 'POST' && req.path.endsWith('/items') && b.inspection_template_item.type) {
         throw new ProcoreApiError('type is not included in the list', 422);
       }
-      if (req.method === 'POST' && req.path.endsWith('/checklist/schedules') && b.schedule.frequency !== 'every_3_months') {
-        throw new ProcoreApiError('frequency is not included in the list', 422);
-      }
       return base(req);
     };
     const result = await execute({
@@ -207,7 +210,7 @@ describe('variantes no documentadas (type del ítem y frequency)', () => {
       companyId: '10',
       projectId: '20',
       sections: plan({ inc: '1', form: '2' }),
-      prepared,
+      prepared: preparedFresh,
       reuseExisting: false,
       webBase: WEB,
       today: TODAY,
@@ -220,10 +223,24 @@ describe('variantes no documentadas (type del ítem y frequency)', () => {
     // el 2.º (mismo tipo de valor) va directo sin type: se reutiliza lo aprendido.
     const itemPosts = calls.filter((c) => c.method === 'POST' && c.path.endsWith('/items'));
     expect(itemPosts.map((c) => (c.body as any).inspection_template_item.type ?? null)).toEqual(['number', 'Número', null, null]);
-    const freqs = calls
-      .filter((c) => c.method === 'POST' && c.path.endsWith('/checklist/schedules'))
-      .map((c) => (c.body as any).schedule.frequency);
-    expect(freqs).toEqual(['quarterly', 'every_3_months']);
+  });
+
+  it('si el proyecto termina antes de 3 meses, la primera planificada vence en la fecha fin', async () => {
+    const { client, log } = dry();
+    const result = await execute({
+      client,
+      companyId: '10',
+      projectId: '20',
+      sections: plan({ inc: '1' }),
+      prepared: { ...preparedFresh, endDate: '2026-11-30' },
+      reuseExisting: false,
+      webBase: WEB,
+      today: TODAY,
+      sleep: noSleep,
+    });
+    expect(result.ok).toBe(true);
+    const schedule = (log.find((e) => e.method === 'POST' && e.path.endsWith('/checklist/schedules'))!.body as any).schedule;
+    expect(schedule.first_inspection_due_at).toBe('2026-11-30T12:00:00Z');
   });
 });
 

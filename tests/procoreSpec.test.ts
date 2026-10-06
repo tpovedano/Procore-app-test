@@ -75,13 +75,15 @@ describe('payloads según la referencia', () => {
 });
 
 describe('payload del schedule (planificada trimestral)', () => {
-  it('usa los campos de la referencia', () => {
-    const p = buildSchedulePayload({ templateId: '42', startDate: '2026-10-06', endDate: '2027-12-31', frequency: 'quarterly' });
+  it('incluye los campos obligatorios que exige Procore', () => {
+    const p = buildSchedulePayload({ templateId: '42', firstDueDate: '2027-01-06', endDate: '2027-12-31' });
     expect(p).toEqual({
       schedule: {
         name: SCHEDULE_NAME,
+        private: false,
+        days_created_before_due_date: 7,
         inspection_template_id: 42,
-        first_inspection_due_at: '2026-10-06',
+        first_inspection_due_at: '2027-01-06T12:00:00Z',
         ends_at: '2027-12-31',
         frequency: 'quarterly',
       },
@@ -89,16 +91,16 @@ describe('payload del schedule (planificada trimestral)', () => {
   });
 
   it('la planificada no lleva valores de ítems', () => {
-    const p = buildSchedulePayload({ templateId: 1, startDate: '2026-10-01', endDate: '2027-01-01', frequency: 'quarterly' });
+    const p = buildSchedulePayload({ templateId: 1, firstDueDate: '2027-01-01', endDate: '2027-06-01' });
     expect(JSON.stringify(p)).not.toMatch(/number_value|text_value|item_response/);
   });
 
-  it('normaliza fechas con hora y rechaza fechas inválidas o fin anterior al inicio', () => {
-    const base = { templateId: 1, frequency: 'quarterly' };
-    const p = buildSchedulePayload({ ...base, startDate: '2026-10-01T08:00:00Z', endDate: '2027-01-01' }) as any;
-    expect(p.schedule.first_inspection_due_at).toBe('2026-10-01');
-    expect(() => buildSchedulePayload({ ...base, startDate: '2026-10-01', endDate: '' })).toThrow(SchedulePayloadError);
-    expect(() => buildSchedulePayload({ ...base, startDate: '2026-10-01', endDate: '2026-09-01' })).toThrow(/anterior/);
+  it('first_inspection_due_at es un timestamp válido; rechaza fechas inválidas o fin anterior', () => {
+    const p = buildSchedulePayload({ templateId: 1, firstDueDate: '2027-01-01T08:00:00Z', endDate: '2027-06-01' }) as any;
+    expect(p.schedule.first_inspection_due_at).toBe('2027-01-01T12:00:00Z');
+    expect(Number.isNaN(Date.parse(p.schedule.first_inspection_due_at))).toBe(false);
+    expect(() => buildSchedulePayload({ templateId: 1, firstDueDate: '2027-01-01', endDate: '' })).toThrow(SchedulePayloadError);
+    expect(() => buildSchedulePayload({ templateId: 1, firstDueDate: '2027-01-01', endDate: '2026-09-01' })).toThrow(/anterior/);
   });
 
   it('actualización de fecha fin y lectura de ends_at', () => {

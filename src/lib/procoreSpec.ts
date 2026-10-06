@@ -7,7 +7,6 @@
  * "Project Management / Inspections" y "Core / Portfolio"). Cada endpoint indica
  * su nombre en la referencia. Lo que la referencia NO detalla está marcado con
  * TODO(verify) y se resuelve en tiempo de ejecución probando variantes:
- *   · valores admitidos de `frequency` en Checklist Schedules;
  *   · valor de `type` de un ítem de plantilla (se toma de List Checklist Item Types).
  *
  * Flujo de plantilla (la API no permite añadir secciones/ítems a una plantilla
@@ -209,16 +208,24 @@ export function buildItemResponsePayload(valueType: ValueType, value: number | s
 }
 
 /**
- * TODO(verify): la referencia no enumera los valores de `frequency`. Se prueban
- * en orden; un 422 no crea nada y se pasa al siguiente.
+ * Valores de `frequency` confirmados por la respuesta de validación de Procore:
+ * once, daily, weekly, once_every_two_weeks, monthly, quarterly, twice_yearly, yearly.
  */
-export const QUARTERLY_FREQUENCY_CANDIDATES = ['quarterly', 'every_3_months', 'every_three_months'] as const;
+export const SCHEDULE_FREQUENCY = 'quarterly';
+
+/** Días de antelación con que Procore crea cada inspección antes de su vencimiento (obligatorio). */
+export const DAYS_CREATED_BEFORE_DUE_DATE = 7;
+
+/** `first_inspection_due_at` debe ser un timestamp: se usa el mediodía UTC para no cambiar de día por zona horaria. */
+export function toScheduleTimestamp(isoDate: string): string {
+  return `${isoDate}T12:00:00Z`;
+}
 
 export interface SchedulePayloadArgs {
   templateId: Id;
-  startDate: string;
+  /** Vencimiento de la primera inspección planificada (YYYY-MM-DD). */
+  firstDueDate: string;
   endDate: string;
-  frequency: string;
   name?: string;
 }
 
@@ -226,25 +233,29 @@ export class SchedulePayloadError extends Error {}
 
 /**
  * [Create a Checklist (Inspection) Schedule]
- * schedule*{name, inspection_template_id, first_inspection_due_at, ends_at, frequency, …}
+ * schedule*{name, private, days_created_before_due_date, inspection_template_id,
+ *           first_inspection_due_at (timestamp), ends_at, frequency}
+ * `private` y `days_created_before_due_date` son obligatorios (respuesta 400 de Procore).
  */
 export function buildSchedulePayload(args: SchedulePayloadArgs): Record<string, unknown> {
-  const start = toIsoDate(args.startDate);
+  const first = toIsoDate(args.firstDueDate);
   const end = toIsoDate(args.endDate);
-  if (!start) throw new SchedulePayloadError('Fecha de inicio inválida.');
+  if (!first) throw new SchedulePayloadError('Fecha de la primera inspección inválida.');
   if (!end) throw new SchedulePayloadError('Fecha fin inválida.');
-  if (end < start) {
+  if (end < first) {
     throw new SchedulePayloadError(
-      `La fecha fin del proyecto (${end}) es anterior a la fecha de inicio de la planificación (${start}).`,
+      `La fecha fin del proyecto (${end}) es anterior a la primera inspección planificada (${first}).`,
     );
   }
   return {
     schedule: {
       name: args.name ?? SCHEDULE_NAME,
+      private: false,
+      days_created_before_due_date: DAYS_CREATED_BEFORE_DUE_DATE,
       inspection_template_id: Number(args.templateId),
-      first_inspection_due_at: start,
+      first_inspection_due_at: toScheduleTimestamp(first),
       ends_at: end,
-      frequency: args.frequency,
+      frequency: SCHEDULE_FREQUENCY,
     },
   };
 }

@@ -17,11 +17,10 @@
  * se marca el resto como "omitido" y el resultado indica qué se creó y qué no.
  */
 import { normalizeForSearch, type ValueType } from './catalog.js';
-import { todayIso } from './dates.js';
+import { addMonthsIso, todayIso } from './dates.js';
 import { ProcoreApiError, type ProcoreClient, type ProcoreObject } from './procore.js';
 import {
   INSPECTION_NAME,
-  QUARTERLY_FREQUENCY_CANDIDATES,
   SCHEDULE_NAME,
   TEMPLATE_NAME,
   asArray,
@@ -558,22 +557,18 @@ export async function execute(input: ExecuteInput): Promise<ExecuteResult> {
       });
       summary.push(`Planificación trimestral reutilizada (id ${sid}).`);
     } else {
-      // TODO(verify): valores de `frequency`; se prueban en orden (un 422 no crea nada).
-      const res = await retry(() =>
-        firstAccepted(
-          QUARTERLY_FREQUENCY_CANDIDATES.map(
-            (frequency) => () =>
-              client.createSchedule(
-                projectId,
-                buildSchedulePayload({ templateId, startDate: today, endDate: prepared.endDate, frequency }),
-              ),
-          ),
+      // Primera medición trimestral a los 3 meses del reporte de hoy (o en la fecha fin si es antes).
+      const firstDue = [addMonthsIso(today, 3), prepared.endDate].sort()[0]!;
+      const created = await retry(() =>
+        client.createSchedule(
+          projectId,
+          buildSchedulePayload({ templateId, firstDueDate: firstDue, endDate: prepared.endDate }),
         ),
       );
-      const sid = extractId(res.value);
+      const sid = extractId(created);
       update('schedule', {
         status: 'done',
-        detail: `Trimestral desde ${today} hasta ${prepared.endDate}.`,
+        detail: `Trimestral: primera el ${firstDue}, hasta ${prepared.endDate}.`,
         url: scheduleWebUrl(webBase, projectId),
       });
       summary.push(`Planificación trimestral creada${sid ? ` (id ${sid})` : ''} hasta ${prepared.endDate}.`);
