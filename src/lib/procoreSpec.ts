@@ -51,6 +51,18 @@ export const ENDPOINTS = {
     verified: false,
     note: 'TODO(verify): "List Projects" (GET /rest/v1.0/projects?company_id=) está documentado; confirmar "Show Project" y el nombre del campo de fecha fin.',
   },
+  listCompanyTemplates: {
+    method: 'GET',
+    template: '/rest/v1.0/companies/{company_id}/checklist/list_templates',
+    verified: true,
+    note: 'Confirmado por el usuario: devuelve los ids de plantilla que usan "Company Checklist Template Sections".',
+  },
+  createCompanyTemplate: {
+    method: 'POST',
+    template: '/rest/v1.0/companies/{company_id}/checklist/list_templates',
+    verified: false,
+    note: 'TODO(verify): Company Checklist Templates → Create. Cuerpo { list_template: { name, description } }.',
+  },
   listProjectTemplates: {
     method: 'GET',
     template: '/rest/v1.0/projects/{project_id}/checklist/list_templates',
@@ -131,6 +143,8 @@ export const paths = {
   me: () => '/rest/v1.0/me',
   showProject: (projectId: Id) => `/rest/v1.0/projects/${enc(projectId)}`,
   projectTemplates: (projectId: Id) => `/rest/v1.0/projects/${enc(projectId)}/checklist/list_templates`,
+  /** Plantillas de compañía: aquí se crea la plantilla (sus secciones/ítems solo existen a nivel compañía). */
+  companyTemplates: (companyId: Id) => `/rest/v1.0/companies/${enc(companyId)}/checklist/list_templates`,
   checklists: () => '/rest/v1.0/checklist/lists',
   schedules: (projectId: Id) => `/rest/v1.0/projects/${enc(projectId)}/checklist/schedules`,
   schedule: (projectId: Id, scheduleId: Id) =>
@@ -167,8 +181,8 @@ export const CANDIDATES = {
   companyTemplates: (companyId: Id): Candidate => ({ path: `/rest/v1.0/companies/${enc(companyId)}/checklist/list_templates` }),
   /** Borrado de la plantilla si su creación queda incompleta. */
   templateDelete: (companyId: Id, projectId: Id, templateId: Id): Candidate[] => [
-    { path: `/rest/v1.0/projects/${enc(projectId)}/checklist/list_templates/${enc(templateId)}` },
     { path: `/rest/v1.0/companies/${enc(companyId)}/checklist/list_templates/${enc(templateId)}` },
+    { path: `/rest/v1.0/projects/${enc(projectId)}/checklist/list_templates/${enc(templateId)}` },
   ],
   /** Crear inspección: la ruta del enunciado y la variante con proyecto en la ruta. */
   checklistCreate: (projectId: Id): Candidate[] => [

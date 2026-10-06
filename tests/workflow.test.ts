@@ -164,7 +164,7 @@ describe('errores parciales', () => {
     });
     expect(result.ok).toBe(false);
     expect(result.steps.map((s) => s.status)).toEqual(['done', 'done', 'done', 'failed']);
-    expect(result.summary.join(' ')).toMatch(/Plantilla creada/);
+    expect(result.summary.join(' ')).toMatch(/Plantilla de compañía creada/);
     expect(result.summary.join(' ')).toMatch(/Falló el paso "Inspección planificada trimestral"/);
   });
 
@@ -194,7 +194,7 @@ describe('errores parciales', () => {
     // Se probaron las 4 variantes de cuerpo del ítem antes de rendirse, y se borró la plantilla.
     const failedItemPosts = calls.filter((c) => c.method === 'POST' && JSON.stringify(c.body).includes('Horas de formación'));
     expect(failedItemPosts).toHaveLength(4);
-    expect(calls.some((c) => c.method === 'DELETE' && /\/projects\/20\/checklist\/list_templates\/\d+$/.test(c.path))).toBe(true);
+    expect(calls.some((c) => c.method === 'DELETE' && /\/companies\/10\/checklist\/list_templates\/\d+$/.test(c.path))).toBe(true);
     expect(calls.some((c) => c.path.endsWith('/checklist/lists') && c.method === 'POST')).toBe(false);
   });
 });

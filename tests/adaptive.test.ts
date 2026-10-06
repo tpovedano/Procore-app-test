@@ -22,7 +22,7 @@ function strangeProcore() {
     calls.push(req);
     const { method: m, path: p } = req;
     const body = (req.body ?? {}) as Record<string, any>;
-    if (m === 'POST' && p === '/rest/v1.0/projects/20/checklist/list_templates') return { status: 201, data: { id: 77 } };
+    if (m === 'POST' && p === '/rest/v1.0/companies/10/checklist/list_templates') return { status: 201, data: { id: 77 } };
     if (p === '/rest/v1.0/checklist/list_templates/77/sections') {
       if (m === 'GET') return { status: 200, data: sections };
       if ('section' in body) throw invalid('param is missing or the value is empty: name');
@@ -169,22 +169,19 @@ describe('verificación de la plantilla', () => {
     expect(result.steps.map((s) => s.status)).toEqual(['failed', 'skipped', 'skipped', 'skipped']);
     expect(result.steps[0]!.detail).toMatch(/aceptó la creación de 2 secciones.*no aparecen: Seguridad, Medio ambiente/);
     expect(calls.some((c) => c.method === 'POST' && c.path.endsWith('/checklist/lists'))).toBe(false);
-    // Probó también la alternativa de compañía y borró ambas plantillas incompletas.
+    // La plantilla se creó a nivel compañía y, al quedar incompleta, se borró.
     expect(calls.some((c) => c.method === 'POST' && c.path === '/rest/v1.0/companies/10/checklist/list_templates')).toBe(true);
-    expect(result.summary.join(' ')).toMatch(/se crea a nivel compañía/);
-    expect(calls.filter((c) => c.method === 'DELETE').length).toBeGreaterThanOrEqual(2);
+    expect(calls.some((c) => c.method === 'DELETE' && c.path.startsWith('/rest/v1.0/companies/10/'))).toBe(true);
   });
 
-  it('si la plantilla de proyecto queda vacía, la construye a nivel compañía y crea la inspección desde ella', async () => {
+  it('crea la plantilla en compañía y usa ese id para secciones, inspección y planificada', async () => {
     const calls: ApiRequest[] = [];
     let id = 400;
-    // Solo las plantillas de compañía guardan secciones (como sugiere el sandbox).
     const companySections = new Map<string, { id: number; name: string }[]>();
     const t: Transport = async (req) => {
       calls.push(req);
       const { method: m, path: p } = req;
       const body = (req.body ?? {}) as Record<string, any>;
-      if (m === 'POST' && p === '/rest/v1.0/projects/20/checklist/list_templates') return { status: 201, data: { id: 1 } };
       if (m === 'POST' && p === '/rest/v1.0/companies/10/checklist/list_templates') {
         companySections.set('2', []);
         return { status: 201, data: { id: 2 } };
@@ -192,13 +189,13 @@ describe('verificación de la plantilla', () => {
       const sec = /^\/rest\/v1\.0\/companies\/10\/checklist\/list_templates\/(\d+)\/sections$/.exec(p);
       if (sec) {
         const list = companySections.get(sec[1]!);
-        if (m === 'GET') return { status: 200, data: list ?? [] };
+        if (!list) throw notFound(); // un id que no es de compañía → 404 (lo visto en sandbox)
+        if (m === 'GET') return { status: 200, data: list };
         const s = { id: id++, name: body.section?.name };
-        list?.push(s); // en la de proyecto (id 1) "acepta" pero no guarda
+        list.push(s);
         return { status: 201, data: { id: s.id } };
       }
       if (m === 'POST' && p.endsWith('/items')) return { status: 201, data: { id: id++ } };
-      if (m === 'DELETE') return { status: 200, data: {} };
       if (m === 'POST' && p === '/rest/v1.0/checklist/lists') return { status: 201, data: { id: 77 } };
       if (m === 'GET' && p === '/rest/v1.0/checklist/lists/77') {
         return { status: 200, data: { sections: [{ name: 'Seguridad', items: [{ id: 5, name: 'Incidentes (uds)' }] }] } };
@@ -218,15 +215,19 @@ describe('verificación de la plantilla', () => {
       prepared: { projectName: 'P', endDate: '2027-12-31', endDateField: 'completion_date', existing: {} },
       reuseExisting: false,
       webBase: 'https://sandbox.procore.com',
-      today: '2026-10-05',
+      today: '2026-10-06',
       sleep: async () => {},
     });
     expect(result.ok).toBe(true);
     expect(result.steps[0]!.detail).toMatch(/Plantilla de compañía/);
+    // Nunca se crea plantilla de proyecto.
+    expect(calls.some((c) => c.method === 'POST' && c.path === '/rest/v1.0/projects/20/checklist/list_templates')).toBe(false);
+    expect(calls.find((c) => c.method === 'POST' && c.path.endsWith('/sections'))!.path).toBe(
+      '/rest/v1.0/companies/10/checklist/list_templates/2/sections',
+    );
     const createList = calls.find((c) => c.method === 'POST' && c.path === '/rest/v1.0/checklist/lists')!;
     expect(createList.body).toMatchObject({ list_template_id: 2 });
     const schedule = calls.find((c) => c.method === 'POST' && c.path.endsWith('/schedules'))!;
     expect(schedule.body).toMatchObject({ schedule: { list_template_id: 2 } });
-    expect(calls.some((c) => c.method === 'DELETE' && c.path.endsWith('/list_templates/1'))).toBe(true);
   });
 });

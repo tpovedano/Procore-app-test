@@ -33,7 +33,6 @@ import {
   extractScheduleEndDate,
   resolveProjectEndDate,
   scheduleWebUrl,
-  templateWebUrl,
 } from './procoreSpec.js';
 import type { PlannedSection } from './selection.js';
 
@@ -170,24 +169,16 @@ function findByName(list: ProcoreObject[], name: string): ExistingRef | undefine
 export async function findExisting(
   client: ProcoreClient,
   projectId: string,
-  companyId?: string,
+  companyId: string,
 ): Promise<ExistingObjects> {
+  // La plantilla vive a nivel COMPAÑÍA (sus secciones/ítems solo se pueden crear ahí).
   const [templates, lists, schedules] = await Promise.all([
-    client.listProjectTemplates(projectId),
+    client.listCompanyTemplates(companyId),
     client.listChecklists(projectId),
     client.listSchedules(projectId),
   ]);
   const existing: ExistingObjects = {};
-  let t = findByName(templates, TEMPLATE_NAME);
-  if (!t) {
-    // La plantilla puede haberse creado a nivel compañía (alternativa cuando la de proyecto no admite secciones).
-    try {
-      const r = await client.getAt(CANDIDATES.companyTemplates(companyId ?? ''));
-      if (companyId && Array.isArray(r.data)) t = findByName(r.data as ProcoreObject[], TEMPLATE_NAME);
-    } catch {
-      /* sin permisos de compañía o ruta no disponible: se ignora */
-    }
-  }
+  const t = findByName(templates, TEMPLATE_NAME);
   if (t) existing.template = t;
   const i = findByName(lists, INSPECTION_NAME);
   if (i) existing.inspection = i;
@@ -249,11 +240,11 @@ export interface ExecuteResult {
 /** Busca por nombre la plantilla recién creada (la más reciente = id mayor), con reintentos. */
 async function findCreatedTemplate(
   client: ProcoreClient,
-  projectId: string,
+  companyId: string,
   sleep: (ms: number) => Promise<void>,
 ): Promise<string | null> {
   for (let i = 0; i <= PROPAGATION_DELAYS_MS.length; i++) {
-    const templates = await client.listProjectTemplates(projectId);
+    const templates = await client.listCompanyTemplates(companyId);
     const ids = templates
       .filter((t) => sameName(extractName(t), TEMPLATE_NAME))
       .map((t) => extractId(t))
@@ -450,71 +441,44 @@ export async function execute(input: ExecuteInput): Promise<ExecuteResult> {
       templateId = existing.template.id;
       update('template', {
         status: 'reused',
-        detail: 'Se reutiliza la plantilla existente (sus ítems pueden diferir de la selección actual).',
-        url: templateWebUrl(webBase, projectId, templateId),
+        detail: 'Se reutiliza la plantilla de compañía existente (sus ítems pueden diferir de la selección actual).',
       });
       summary.push(`Plantilla reutilizada (id ${templateId}).`);
     } else {
-      const tpl = await client.createProjectTemplate(projectId, buildTemplatePayload());
+      // La plantilla se crea a nivel COMPAÑÍA: es el id que aceptan los endpoints de
+      // "Company Checklist Template Sections" (con un id de plantilla de proyecto dan 404).
+      const tpl = await client.createCompanyTemplate(companyId, buildTemplatePayload());
       let id = extractId(tpl);
       if (!id) {
-        // La respuesta no trae el id reconocible: se busca la plantilla recién creada por nombre.
-        id = await findCreatedTemplate(client, projectId, sleep);
+        // La respuesta no trae un id reconocible: se busca en el listado de plantillas de compañía.
+        id = await findCreatedTemplate(client, companyId, sleep);
       }
       if (!id) {
         throw new Error(
-          'Procore creó la plantilla pero no se pudo obtener su id. Revisa el registro técnico y elimina la plantilla en Procore antes de reintentar.',
+          'Procore creó la plantilla de compañía pero no se pudo obtener su id. Revisa el registro técnico y elimínala en Procore (Inspecciones de compañía) antes de reintentar.',
         );
       }
       templateId = id;
       const totalItems = sections.reduce((n, s) => n + s.items.length, 0);
-      const ctx = { client, companyId, projectId, sections, sleep, retry };
       let stats: PopulateStats;
-      let scope: TemplateScope = 'project';
       try {
-        stats = await populateTemplate(ctx, 'project', templateId);
+        stats = await populateTemplate({ client, companyId, projectId, sections, sleep, retry }, 'company', templateId);
       } catch (e) {
         const cleaned = await deleteTemplate(client, companyId, projectId, templateId);
-        if (!(e instanceof TemplateNotPopulatedError)) {
-          summary.push(
-            cleaned
-              ? 'La plantilla quedó incompleta y se eliminó automáticamente para no dejar restos.'
-              : `Plantilla creada (id ${templateId}) pero incompleta. Elimínala en Procore antes de reintentar.`,
-          );
-          throw e;
-        }
-        // La API no permite añadir secciones a una plantilla de PROYECTO: se construye a nivel COMPAÑÍA,
-        // donde sí existe "Company Checklist Template Sections".
         summary.push(
-          `La plantilla de proyecto no admitió secciones por la API${cleaned ? ' (se eliminó)' : ` (id ${templateId}: elimínala en Procore)`}; se crea a nivel compañía.`,
+          cleaned
+            ? 'La plantilla quedó incompleta y se eliminó automáticamente para no dejar restos.'
+            : `Plantilla de compañía (id ${templateId}) incompleta: elimínala en Procore (Inspecciones de compañía) antes de reintentar.`,
         );
-        scope = 'company';
-        const created = await postFirstAccepted(client, [CANDIDATES.companyTemplates(companyId)], [buildTemplatePayload()]);
-        const companyTemplateId = extractId(created.data);
-        if (!companyTemplateId) throw new Error('Procore no devolvió el id de la plantilla de compañía.');
-        templateId = companyTemplateId;
-        try {
-          stats = await populateTemplate(ctx, 'company', templateId);
-        } catch (e2) {
-          const cleaned2 = await deleteTemplate(client, companyId, projectId, templateId);
-          summary.push(
-            cleaned2
-              ? 'La plantilla de compañía quedó incompleta y se eliminó automáticamente.'
-              : `Plantilla de compañía (id ${templateId}) incompleta: elimínala en Procore (Inspecciones de compañía).`,
-          );
-          throw e2;
-        }
+        throw e;
       }
       update('template', {
         status: stats.untypedItems > 0 ? 'warning' : 'done',
         detail:
-          `${scope === 'company' ? 'Plantilla de compañía. ' : ''}${sections.length} secciones, ${totalItems} ítems.` +
+          `Plantilla de compañía: ${sections.length} secciones, ${totalItems} ítems.` +
           (stats.untypedItems > 0 ? ` ${stats.untypedItems} ítems sin tipo número/texto: Procore rechazó el campo de tipo.` : ''),
-        url: scope === 'project' ? templateWebUrl(webBase, projectId, templateId) : undefined,
       });
-      summary.push(
-        `Plantilla ${scope === 'company' ? 'de compañía ' : ''}creada (id ${templateId}) con ${sections.length} secciones y ${totalItems} ítems.`,
-      );
+      summary.push(`Plantilla de compañía creada (id ${templateId}) con ${sections.length} secciones y ${totalItems} ítems.`);
     }
 
     // 2. Inspección "Reporte de objetivos" desde la plantilla.

@@ -87,6 +87,11 @@ export function createProcoreClient(rawTransport: Transport) {
 
     listProjectTemplates: (projectId: string) => listAll(transport, paths.projectTemplates(projectId)),
 
+    listCompanyTemplates: (companyId: string) => listAll(transport, paths.companyTemplates(companyId)),
+
+    createCompanyTemplate: (companyId: string, payload: unknown) =>
+      one(transport, { method: 'POST', path: paths.companyTemplates(companyId), body: payload }),
+
     createProjectTemplate: (projectId: string, payload: unknown) =>
       one(transport, { method: 'POST', path: paths.projectTemplates(projectId), body: payload }),
 
