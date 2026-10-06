@@ -62,12 +62,13 @@ export function createDryRunTransport(opts: DryRunOptions = {}): Transport {
     const id = String(nextId++);
     const body = (req.body ?? {}) as Record<string, any>;
     const secMatch = /list_templates\/(\d+)\/sections$/.exec(p);
-    const itemMatch = /list_templates\/(\d+)\/sections\/(\d+)\/items$/.exec(p);
+    const itemMatch = /inspection_templates\/(\d+)\/items$/.exec(p);
     if (/\/checklist\/list_templates$/.test(p)) sectionsByTemplate.set(id, []);
     else if (secMatch) sectionsByTemplate.get(secMatch[1]!)?.push({ id, name: body.section?.name ?? '', items: [] });
     else if (itemMatch) {
-      const sec = sectionsByTemplate.get(itemMatch[1]!)?.find((s) => s.id === itemMatch[2]);
-      sec?.items.push({ id, name: body.item?.name ?? '' });
+      const fields = body.item ?? body;
+      const sec = sectionsByTemplate.get(itemMatch[1]!)?.find((s) => s.id === String(fields.section_id));
+      sec?.items.push({ id, name: fields.name ?? '' });
     } else if (p === '/rest/v1.0/checklist/lists' && body.list_template_id != null) {
       templateByList.set(id, String(body.list_template_id));
     }

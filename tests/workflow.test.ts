@@ -39,6 +39,9 @@ describe('flujo completo (dry-run)', () => {
     expect(sectionPosts.every((e) => /^\/rest\/v1\.0\/companies\/10\/checklist\/list_templates\/\d+\/sections$/.test(e.path))).toBe(true);
     expect(sectionPosts.map((e) => (e.body as any).section.name)).toEqual(['Seguridad', 'Medio ambiente']);
     const itemPosts = posts.filter((e) => e.path.endsWith('/items'));
+    // Ítems: "Create Company Inspection Template Item", con la sección en el cuerpo.
+    expect(itemPosts.every((e) => /^\/rest\/v1\.0\/companies\/10\/inspection_templates\/\d+\/items$/.test(e.path))).toBe(true);
+    expect(itemPosts.map((e) => typeof (e.body as any).item.section_id)).toEqual(['number', 'number', 'number']);
     expect(itemPosts.map((e) => (e.body as any).item.name)).toEqual(['Incidentes (uds)', 'Protocolo', 'Consumo de agua (m³)']);
     const responses = posts.filter((e) => e.path.endsWith('/item_responses')).map((e) => e.body);
     expect(responses).toEqual([

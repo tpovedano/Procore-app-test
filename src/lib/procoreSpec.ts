@@ -86,9 +86,9 @@ export const ENDPOINTS = {
   },
   createTemplateItem: {
     method: 'POST',
-    template: '/rest/v1.0/companies/{company_id}/checklist/list_templates/{list_template_id}/sections/{section_id}/items',
-    verified: false,
-    note: 'TODO(verify): Company Checklist Template Items → Create y campo de tipo de ítem (Checklist Item Types).',
+    template: '/rest/v1.0/companies/{company_id}/inspection_templates/{inspection_template_id}/items',
+    verified: true,
+    note: 'Confirmado por el usuario ("Create Company Inspection Template Item"). TODO(verify): campo de sección (section_id) y tipo de ítem en el cuerpo.',
   },
   listChecklists: {
     method: 'GET',
@@ -174,8 +174,13 @@ export const CANDIDATES = {
     { path: `/rest/v1.0/checklist/list_templates/${enc(templateId)}/sections`, query: { project_id: String(projectId) } },
   ],
   /** Colección de ítems de una sección, bajo la misma raíz que funcionó para secciones. */
-  templateItems: (sections: Candidate, sectionId: Id): Candidate[] => [
-    { path: `${sections.path}/${enc(sectionId)}/items`, query: sections.query },
+  /**
+   * Ítems de plantilla. Confirmado por el usuario en la referencia ("Create Company
+   * Inspection Template Item"): POST /rest/v1.0/companies/{company_id}/inspection_templates/{id}/items.
+   * La sección no va en la ruta, sino en el cuerpo (ver itemBodies).
+   */
+  templateItems: (companyId: Id, templateId: Id): Candidate[] => [
+    { path: `/rest/v1.0/companies/${enc(companyId)}/inspection_templates/${enc(templateId)}/items` },
   ],
   /** Plantillas de compañía (alternativa si la de proyecto no admite secciones por la API). */
   companyTemplates: (companyId: Id): Candidate => ({ path: `/rest/v1.0/companies/${enc(companyId)}/checklist/list_templates` }),
@@ -216,19 +221,23 @@ export function sectionBodies(name: string, position: number): Record<string, un
 }
 
 /**
- * Variantes de cuerpo de ítem. Si Procore rechaza el campo de tipo
- * (TODO(verify) Checklist Item Types), se crea el ítem sin tipo y se avisa.
+ * Variantes de cuerpo de ítem para "Create Company Inspection Template Item".
+ * TODO(verify): nombre del campo de sección (se asume `section_id`) y del tipo de
+ * respuesta (Checklist Item Types). Si Procore rechaza el tipo, se crea el ítem
+ * sin tipo y se avisa.
  */
 export function itemBodies(
   item: Pick<PlannedItem, 'name' | 'valueType'>,
   position: number,
+  sectionId: Id,
 ): { body: Record<string, unknown>; typed: boolean }[] {
   const typeFields = itemTypeFields(item.valueType);
+  const base = { name: item.name, position, section_id: Number(sectionId) };
   return [
-    { body: { item: { name: item.name, position, ...typeFields } }, typed: true },
-    { body: { name: item.name, position, ...typeFields }, typed: true },
-    { body: { item: { name: item.name, position } }, typed: false },
-    { body: { name: item.name, position }, typed: false },
+    { body: { item: { ...base, ...typeFields } }, typed: true },
+    { body: { ...base, ...typeFields }, typed: true },
+    { body: { item: base }, typed: false },
+    { body: base, typed: false },
   ];
 }
 
@@ -258,6 +267,8 @@ export const PROXY_ALLOWLIST: ReadonlyArray<{ method: HttpMethod; pattern: RegEx
     method: 'POST',
     pattern: /^\/rest\/v1\.0\/(?:(?:projects|companies)\/\d+\/)?checklist\/list_templates\/\d+\/sections(?:\/\d+\/items)?$/,
   },
+  { method: 'POST', pattern: /^\/rest\/v1\.0\/companies\/\d+\/inspection_templates\/\d+\/items$/ },
+  { method: 'GET', pattern: /^\/rest\/v1\.0\/companies\/\d+\/inspection_templates(?:\/\d+(?:\/items)?)?$/ },
   { method: 'DELETE', pattern: /^\/rest\/v1\.0\/(?:projects|companies)\/\d+\/checklist\/list_templates\/\d+$/ },
   { method: 'POST', pattern: /^\/rest\/v1\.0\/(?:projects\/\d+\/)?checklist\/lists$/ },
   {

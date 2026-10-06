@@ -10,7 +10,7 @@ const invalid = (msg: string) => new ProcoreApiError(msg, 422);
 /**
  * Procore simulado con rutas y formatos DISTINTOS de las primeras candidatas:
  * - secciones solo en /rest/v1.0/checklist/list_templates/{tid}/sections (3.ª candidata), cuerpo plano;
- * - ítems sin campo de tipo (rechaza item_type);
+ * - ítems en /companies/{cid}/inspection_templates/{tid}/items (sección en el cuerpo), sin campo de tipo;
  * - inspecciones solo en /projects/{pid}/checklist/lists;
  * - respuestas solo en /checklist/items/{iid}/item_responses con cuerpo plano.
  */
@@ -30,12 +30,11 @@ function strangeProcore() {
       sections.push(s);
       return { status: 201, data: { id: s.id } };
     }
-    const itemsMatch = /^\/rest\/v1\.0\/checklist\/list_templates\/77\/sections\/(\d+)\/items$/.exec(p);
-    if (itemsMatch && m === 'POST') {
+    if (p === '/rest/v1.0/companies/10/inspection_templates/77/items' && m === 'POST') {
       const fields = body.item ?? body;
       if ('item_type' in fields) throw invalid('item_type is not a permitted parameter');
       if (!body.item) throw invalid('param is missing: item');
-      const sec = sections.find((s) => s.id === Number(itemsMatch[1]))!;
+      const sec = sections.find((s) => s.id === Number(fields.section_id))!;
       const it = { id: next++, name: fields.name };
       sec.items.push(it);
       return { status: 201, data: { id: it.id } };
@@ -195,7 +194,7 @@ describe('verificación de la plantilla', () => {
         list.push(s);
         return { status: 201, data: { id: s.id } };
       }
-      if (m === 'POST' && p.endsWith('/items')) return { status: 201, data: { id: id++ } };
+      if (m === 'POST' && p === '/rest/v1.0/companies/10/inspection_templates/2/items') return { status: 201, data: { id: id++ } };
       if (m === 'POST' && p === '/rest/v1.0/checklist/lists') return { status: 201, data: { id: 77 } };
       if (m === 'GET' && p === '/rest/v1.0/checklist/lists/77') {
         return { status: 200, data: { sections: [{ name: 'Seguridad', items: [{ id: 5, name: 'Incidentes (uds)' }] }] } };

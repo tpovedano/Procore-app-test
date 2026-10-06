@@ -91,9 +91,10 @@ export async function runDiagnostics(
       }
     }
     if (sectionsRoot && sectionId) {
-      for (const c of CANDIDATES.templateItems(sectionsRoot, sectionId)) {
-        await get(`Ítems de sección de plantilla de ${kind}`, c);
-      }
+      await get(`Ítems de sección de plantilla de ${kind} (ruta anidada)`, { path: `${sectionsRoot.path}/${sectionId}/items` });
+    }
+    if (kind === 'compañía') {
+      for (const c of CANDIDATES.templateItems(cid, tid)) await get('Ítems de plantilla de compañía', c);
     }
   }
 

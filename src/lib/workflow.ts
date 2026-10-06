@@ -293,9 +293,9 @@ async function populateTemplate(ctx: PopulateCtx, scope: TemplateScope, template
     const sectionId = extractId(sec.data);
     if (!sectionId) throw new Error(`Procore no devolvió el id de la sección "${section.name}".`);
     createdSectionIds.push(sectionId);
-    const itemsCols: Candidate[] = CANDIDATES.templateItems(sectionsCol, sectionId);
+    const itemsCols: Candidate[] = CANDIDATES.templateItems(companyId, templateId);
     for (const [ii, item] of section.items.entries()) {
-      const variants = preferFirst(itemBodies(item, ii + 1), itemBodyPref);
+      const variants = preferFirst(itemBodies(item, ii + 1, sectionId), itemBodyPref);
       const res = await retry(() => postFirstAccepted(client, itemsCols, variants.map((v) => v.item.body)));
       const chosen = variants[res.bodyIndex]!;
       itemBodyPref = chosen.originalIndex;
