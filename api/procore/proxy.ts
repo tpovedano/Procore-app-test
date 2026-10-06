@@ -11,7 +11,8 @@ import { callProcore, parseProcoreResponse, refreshAccessToken } from '../_lib/p
 import { seal, unseal, type SessionData } from '../_lib/session.js';
 
 const METHODS = new Set<HttpMethod>(['GET', 'POST', 'PATCH', 'DELETE']);
-const QUERY_KEY = /^[a-z_]{1,40}$/;
+// Claves simples (company_id) o filtros de Procore (filters[list_id]).
+const QUERY_KEY = /^[a-z_]{1,40}(?:\[[a-z_]{1,40}\])?$/;
 
 interface ProxyBody {
   method: HttpMethod;

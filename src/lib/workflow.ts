@@ -2,37 +2,47 @@
  * Orquestación de "Crear". Sin dependencias de React: recibe el cliente de
  * Procore inyectado, así que se testea con un cliente falso.
  *
- *   prepare()  → lee proyecto (fecha fin) y busca duplicados por nombre.
- *   execute()  → plantilla (+secciones/ítems) → inspección → respuestas → planificada.
+ *   prepare()  → lee el proyecto (fecha fin) y busca duplicados por nombre.
+ *   execute()  → plantilla → inspección → valores objetivo → planificada.
  *
- * Si un paso falla se detiene, se marca el resto como "omitido" y el resultado
- * indica qué se creó y qué no.
+ * Plantilla (endpoints verificados en la referencia de Procore):
+ *   1. Create Company Checklist Template
+ *   2. Create Company Checklist Template Section          (una por dominio)
+ *   3. Create Company Inspection Template Item             (uno por elemento, con section_id)
+ *   4. Create a Project Checklist Template from a Company Checklist Template (copia secciones e ítems)
+ *   5. Delete Company Checklist Template                  (limpieza)
+ * La inspección y la planificada usan la plantilla de PROYECTO resultante.
+ *
+ * Si un paso falla se detiene, se limpia lo que quedó a medias de la plantilla,
+ * se marca el resto como "omitido" y el resultado indica qué se creó y qué no.
  */
-import { normalizeForSearch } from './catalog.js';
+import { normalizeForSearch, type ValueType } from './catalog.js';
 import { todayIso } from './dates.js';
 import { ProcoreApiError, type ProcoreClient, type ProcoreObject } from './procore.js';
-import { DiscoveryError, describeTried, findFirst, postFirstAccepted, preferFirst } from './adaptive.js';
 import {
-  CANDIDATES,
   INSPECTION_NAME,
+  QUARTERLY_FREQUENCY_CANDIDATES,
   SCHEDULE_NAME,
   TEMPLATE_NAME,
+  asArray,
   buildChecklistPayload,
+  buildCopyFromCompanyPayload,
+  buildItemResponsePayload,
   buildScheduleEndDatePatch,
   buildSchedulePayload,
+  buildSectionPayload,
+  buildTemplateItemPayload,
   buildTemplatePayload,
-  itemBodies,
-  itemResponseBodies,
-  sectionBodies,
-  type Candidate,
-  type ChecklistItemRef,
   checklistWebUrl,
-  extractChecklistItems,
   extractId,
+  extractListItems,
   extractName,
   extractScheduleEndDate,
+  itemTypeCandidates,
   resolveProjectEndDate,
   scheduleWebUrl,
+  templateWebUrl,
+  type ChecklistItemRef,
 } from './procoreSpec.js';
 import type { PlannedSection } from './selection.js';
 
@@ -55,7 +65,10 @@ export interface ExistingRef {
 }
 
 export interface ExistingObjects {
+  /** Plantilla de proyecto (la que usan inspección y planificada). */
   template?: ExistingRef;
+  /** Plantilla de compañía con el mismo nombre (resto de una ejecución anterior). */
+  companyTemplate?: ExistingRef;
   inspection?: ExistingRef;
   schedule?: ExistingRef & { endDate: string | null };
 }
@@ -68,6 +81,7 @@ export interface Prepared {
 }
 
 export class PreconditionError extends Error {}
+export class TemplateNotPopulatedError extends Error {}
 
 export const STEP_LABELS: Record<StepId, string> = {
   template: 'Plantilla de inspección',
@@ -81,12 +95,11 @@ export function initialSteps(): StepState[] {
 }
 
 export function hasExisting(e: ExistingObjects): boolean {
-  return Boolean(e.template || e.inspection || e.schedule);
+  return Boolean(e.template || e.companyTemplate || e.inspection || e.schedule);
 }
 
 // ─── Errores legibles ─────────────────────────────────────────────────────────
 
-/** Texto breve de la respuesta de Procore (para mostrar al usuario). */
 function procoreDetail(e: ProcoreApiError): string {
   return e.message && !/^Error HTTP \d+$/.test(e.message) ? e.message : '';
 }
@@ -99,15 +112,11 @@ export function describeError(e: unknown): string {
       case 401:
         return 'La sesión con Procore ha caducado. Vuelve a conectar.';
       case 403:
-        return `No tienes permisos suficientes en Procore para esta acción (revisa los permisos de Inspections/Projects)${where}.`;
+        return `No tienes permisos suficientes en Procore para esta acción (Inspections de compañía y de proyecto)${where}.`;
       case 404:
         return `Procore respondió 404 (no encontrado)${where}.${detail ? ` ${detail}` : ''}`;
-      case 422: {
-        const hint = /list_template/i.test(detail)
-          ? ' Puede que la plantilla esté vacía o incompleta por un intento anterior: elimínala en Procore (Inspecciones → Plantillas) y vuelve a crear.'
-          : '';
-        return `Procore rechazó los datos enviados${where}: ${detail || 'sin detalle'}.${hint}`;
-      }
+      case 422:
+        return `Procore rechazó los datos enviados${where}: ${detail || 'sin detalle'}.`;
       case 429:
         return 'Se alcanzó el límite de peticiones de Procore. Espera un momento e inténtalo de nuevo.';
       default:
@@ -116,14 +125,11 @@ export function describeError(e: unknown): string {
           : `Error ${e.status}${where}: ${detail || e.message}`;
     }
   }
-  if (e instanceof DiscoveryError) {
-    return `No se encontró la ruta de la API para este paso (${describeTried(e.tried)}). Usa "Diagnóstico de API" y comparte el informe.`;
-  }
   if (e instanceof Error) return e.message;
   return 'Error desconocido.';
 }
 
-// ─── Reintentos por propagación ───────────────────────────────────────────────
+// ─── Reintentos ───────────────────────────────────────────────────────────────
 
 /** Esperas entre reintentos cuando un objeto recién creado aún no es visible. */
 export const PROPAGATION_DELAYS_MS = [1500, 3000, 5000];
@@ -131,8 +137,8 @@ export const PROPAGATION_DELAYS_MS = [1500, 3000, 5000];
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**
- * Reintenta `fn` si Procore responde 404, o 422 que menciona `list_template`,
- * justo después de crear el objeto del que depende (consistencia eventual).
+ * Reintenta `fn` si Procore responde 404, o 422 que menciona `template`, justo
+ * después de crear el objeto del que depende (consistencia eventual).
  */
 export async function retryWhileNotVisible<T>(
   fn: () => Promise<T>,
@@ -144,11 +150,30 @@ export async function retryWhileNotVisible<T>(
       return await fn();
     } catch (e) {
       const transient =
-        e instanceof ProcoreApiError && (e.status === 404 || (e.status === 422 && /list_template/i.test(e.message)));
+        e instanceof ProcoreApiError && (e.status === 404 || (e.status === 422 && /template/i.test(e.message)));
       if (!transient || i >= delays.length) throw e;
       await sleep(delays[i]!);
     }
   }
+}
+
+const isValidationError = (e: unknown) => e instanceof ProcoreApiError && (e.status === 400 || e.status === 422);
+
+/**
+ * Prueba variantes en orden: un 400/422 (no crea nada) pasa a la siguiente;
+ * cualquier otro error se propaga. Devuelve el resultado y el índice que funcionó.
+ */
+async function firstAccepted<T>(attempts: (() => Promise<T>)[]): Promise<{ value: T; index: number }> {
+  let last: unknown = new Error('Sin variantes que probar.');
+  for (const [index, attempt] of attempts.entries()) {
+    try {
+      return { value: await attempt(), index };
+    } catch (e) {
+      if (!isValidationError(e)) throw e;
+      last = e;
+    }
+  }
+  throw last;
 }
 
 // ─── Fase 1: preparar ─────────────────────────────────────────────────────────
@@ -166,20 +191,33 @@ function findByName(list: ProcoreObject[], name: string): ExistingRef | undefine
   return undefined;
 }
 
-export async function findExisting(
-  client: ProcoreClient,
-  projectId: string,
-  companyId: string,
-): Promise<ExistingObjects> {
-  // La plantilla vive a nivel COMPAÑÍA (sus secciones/ítems solo se pueden crear ahí).
-  const [templates, lists, schedules] = await Promise.all([
-    client.listCompanyTemplates(companyId),
+/** Id más reciente (mayor) entre los objetos con ese nombre. */
+function newestByName(list: ProcoreObject[], name: string): string | null {
+  const ids = list
+    .filter((t) => sameName(extractName(t), name))
+    .map((t) => extractId(t))
+    .filter((x): x is string => x !== null)
+    .sort((a, b) => Number(b) - Number(a));
+  return ids[0] ?? null;
+}
+
+export async function findExisting(client: ProcoreClient, projectId: string, companyId: string): Promise<ExistingObjects> {
+  const [projectTemplates, lists, schedules] = await Promise.all([
+    client.listProjectTemplates(projectId),
     client.listChecklists(projectId),
     client.listSchedules(projectId),
   ]);
+  let companyTemplates: ProcoreObject[] = [];
+  try {
+    companyTemplates = await client.listCompanyTemplates(companyId);
+  } catch {
+    /* sin permisos de compañía: se detectará al crear */
+  }
   const existing: ExistingObjects = {};
-  const t = findByName(templates, TEMPLATE_NAME);
+  const t = findByName(projectTemplates, TEMPLATE_NAME);
   if (t) existing.template = t;
+  const ct = findByName(companyTemplates, TEMPLATE_NAME);
+  if (ct) existing.companyTemplate = ct;
   const i = findByName(lists, INSPECTION_NAME);
   if (i) existing.inspection = i;
   const s = findByName(schedules, SCHEDULE_NAME);
@@ -212,11 +250,149 @@ export async function prepare(
   return { projectName: extractName(project), endDate: end.date, endDateField: end.field, existing };
 }
 
+// ─── Fase 2: plantilla ────────────────────────────────────────────────────────
+
+interface Ctx {
+  client: ProcoreClient;
+  companyId: string;
+  projectId: string;
+  sections: PlannedSection[];
+  sleep: (ms: number) => Promise<void>;
+  retry: <T>(fn: () => Promise<T>) => Promise<T>;
+}
+
+function brief(data: unknown): string {
+  try {
+    const t = JSON.stringify(data);
+    return t.length > 300 ? `${t.slice(0, 300)}…` : t;
+  } catch {
+    return '[no serializable]';
+  }
+}
+
+/** Crea la plantilla de compañía y devuelve su id (de la respuesta o del listado). */
+async function createCompanyTemplate(ctx: Ctx): Promise<string> {
+  const { client, companyId, sleep } = ctx;
+  const created = await client.createCompanyTemplate(companyId, buildTemplatePayload());
+  let id = extractId(created);
+  for (let i = 0; !id && i <= PROPAGATION_DELAYS_MS.length; i++) {
+    if (i > 0) await sleep(PROPAGATION_DELAYS_MS[i - 1]!);
+    id = newestByName(await client.listCompanyTemplates(companyId), TEMPLATE_NAME);
+  }
+  if (!id) throw new Error('Procore creó la plantilla de compañía pero no devolvió su id.');
+  return id;
+}
+
+/** Añade secciones e ítems a la plantilla de compañía y verifica releyéndola. Devuelve ítems sin tipo. */
+async function populateCompanyTemplate(ctx: Ctx, templateId: string): Promise<number> {
+  const { client, companyId, sections, retry } = ctx;
+
+  // Tipos de ítem disponibles (para `type` número/texto). Si no se pueden leer, se crea sin tipo.
+  let itemTypes: unknown = [];
+  try {
+    itemTypes = await client.listItemTypes(companyId);
+  } catch {
+    itemTypes = [];
+  }
+  const typeCandidates: Record<ValueType, (string | undefined)[]> = {
+    number: [...itemTypeCandidates(itemTypes, 'number'), undefined],
+    text: [...itemTypeCandidates(itemTypes, 'text'), undefined],
+  };
+  /** `type` que Procore aceptó para cada tipo de valor (se reutiliza en los siguientes ítems). */
+  const acceptedType = new Map<ValueType, string | undefined>();
+  let untypedItems = 0;
+
+  for (const [si, section] of sections.entries()) {
+    const sec = await retry(() =>
+      client.createCompanyTemplateSection(companyId, templateId, buildSectionPayload(section.name, si + 1)),
+    );
+    const sectionId = extractId(sec);
+    if (!sectionId) throw new Error(`Procore no devolvió el id de la sección "${section.name}".`);
+
+    for (const [ii, item] of section.items.entries()) {
+      const vt = item.valueType;
+      const types = acceptedType.has(vt) ? [acceptedType.get(vt)] : typeCandidates[vt];
+      const res = await retry(() =>
+        firstAccepted(
+          types.map(
+            (type) => () =>
+              client.createCompanyTemplateItem(
+                companyId,
+                templateId,
+                buildTemplateItemPayload(item, ii + 1, sectionId, type),
+              ),
+          ),
+        ),
+      );
+      acceptedType.set(vt, types[res.index]);
+      if (types[res.index] === undefined) untypedItems++;
+    }
+  }
+
+  // Verificación: las secciones e ítems deben existir de verdad antes de copiar la plantilla.
+  const expectedItems = sections.reduce((n, s) => n + s.items.length, 0);
+  for (let attempt = 0; ; attempt++) {
+    const [secData, items] = await Promise.all([
+      client.listCompanyTemplateSections(companyId, templateId),
+      client.listCompanyTemplateItems(companyId, templateId),
+    ]);
+    const found = new Set(asArray(secData).map((s) => normalizeForSearch(extractName(s) ?? '')));
+    const missing = sections.map((s) => s.name).filter((n) => !found.has(normalizeForSearch(n)));
+    if (missing.length === 0 && items.length >= expectedItems) break;
+    if (attempt >= PROPAGATION_DELAYS_MS.length) {
+      throw new TemplateNotPopulatedError(
+        `La plantilla de compañía ${templateId} no quedó completa: ` +
+          (missing.length ? `faltan las secciones ${missing.join(', ')}; ` : '') +
+          `${items.length} de ${expectedItems} ítems. Secciones leídas: ${brief(secData)}`,
+      );
+    }
+    await ctx.sleep(PROPAGATION_DELAYS_MS[attempt]!);
+  }
+  return untypedItems;
+}
+
+/** Copia la plantilla de compañía al proyecto y devuelve el id de la plantilla de proyecto. */
+async function copyToProject(ctx: Ctx, companyTemplateId: string): Promise<string> {
+  const { client, projectId, sleep, retry } = ctx;
+  const created = await retry(() =>
+    client.createProjectTemplateFromCompany(projectId, buildCopyFromCompanyPayload(companyTemplateId)),
+  );
+  let id = extractId(created);
+  for (let i = 0; !id && i <= PROPAGATION_DELAYS_MS.length; i++) {
+    if (i > 0) await sleep(PROPAGATION_DELAYS_MS[i - 1]!);
+    id = newestByName(await client.listProjectTemplates(projectId), TEMPLATE_NAME);
+  }
+  if (!id) throw new Error('Procore copió la plantilla al proyecto pero no devolvió su id.');
+  return id;
+}
+
+async function tryDelete(fn: () => Promise<unknown>): Promise<boolean> {
+  try {
+    await fn();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Ítems de la inspección (List Checklist Items + Sections filtrados por list_id), con reintentos. */
+async function readChecklistItems(ctx: Ctx, listId: string): Promise<ChecklistItemRef[]> {
+  const { client, projectId, sleep } = ctx;
+  for (let attempt = 0; ; attempt++) {
+    const [items, sections] = await Promise.all([
+      client.listChecklistItems(projectId, listId),
+      client.listChecklistSections(projectId, listId).catch(() => []),
+    ]);
+    const refs = extractListItems(items, sections);
+    if (refs.length > 0 || attempt >= PROPAGATION_DELAYS_MS.length) return refs;
+    await sleep(PROPAGATION_DELAYS_MS[attempt]!);
+  }
+}
+
 // ─── Fase 2: ejecutar ─────────────────────────────────────────────────────────
 
 export interface ExecuteInput {
   client: ProcoreClient;
-  /** Necesario para las secciones/ítems de plantilla (endpoints de compañía). */
   companyId: string;
   projectId: string;
   sections: PlannedSection[];
@@ -237,184 +413,6 @@ export interface ExecuteResult {
   summary: string[];
 }
 
-/** Busca por nombre la plantilla recién creada (la más reciente = id mayor), con reintentos. */
-async function findCreatedTemplate(
-  client: ProcoreClient,
-  companyId: string,
-  sleep: (ms: number) => Promise<void>,
-): Promise<string | null> {
-  for (let i = 0; i <= PROPAGATION_DELAYS_MS.length; i++) {
-    const templates = await client.listCompanyTemplates(companyId);
-    const ids = templates
-      .filter((t) => sameName(extractName(t), TEMPLATE_NAME))
-      .map((t) => extractId(t))
-      .filter((x): x is string => x !== null)
-      .sort((a, b) => Number(b) - Number(a));
-    if (ids[0]) return ids[0];
-    if (i < PROPAGATION_DELAYS_MS.length) await sleep(PROPAGATION_DELAYS_MS[i]!);
-  }
-  return null;
-}
-
-export class TemplateNotPopulatedError extends Error {}
-
-type TemplateScope = 'project' | 'company';
-
-interface PopulateStats {
-  createdItems: number;
-  untypedItems: number;
-}
-
-interface PopulateCtx {
-  client: ProcoreClient;
-  companyId: string;
-  projectId: string;
-  sections: PlannedSection[];
-  sleep: (ms: number) => Promise<void>;
-  retry: <T>(fn: () => Promise<T>) => Promise<T>;
-}
-
-/** Añade a la plantilla una sección por dominio y un ítem por elemento, y verifica releyéndola. */
-async function populateTemplate(ctx: PopulateCtx, scope: TemplateScope, templateId: string): Promise<PopulateStats> {
-  const { client, companyId, projectId, sections, sleep, retry } = ctx;
-  // Localiza (con GET, sin efectos) la colección de secciones de la plantilla recién creada.
-  const sectionsCol = (
-    await findFirst(client, CANDIDATES.templateSections(companyId, projectId, templateId), sleep, PROPAGATION_DELAYS_MS)
-  ).candidate;
-  let sectionBodyPref = 0;
-  let itemBodyPref = 0;
-  let createdItems = 0;
-  let untypedItems = 0;
-  const createdSectionIds: string[] = [];
-  for (const [si, section] of sections.entries()) {
-    const secVariants = preferFirst(sectionBodies(section.name, si + 1), sectionBodyPref);
-    const sec = await retry(() => postFirstAccepted(client, [sectionsCol], secVariants.map((v) => v.item)));
-    sectionBodyPref = secVariants[sec.bodyIndex]!.originalIndex;
-    const sectionId = extractId(sec.data);
-    if (!sectionId) throw new Error(`Procore no devolvió el id de la sección "${section.name}".`);
-    createdSectionIds.push(sectionId);
-    const itemsCols: Candidate[] = CANDIDATES.templateItems(companyId, templateId);
-    for (const [ii, item] of section.items.entries()) {
-      const variants = preferFirst(itemBodies(item, ii + 1, sectionId), itemBodyPref);
-      const res = await retry(() => postFirstAccepted(client, itemsCols, variants.map((v) => v.item.body)));
-      const chosen = variants[res.bodyIndex]!;
-      itemBodyPref = chosen.originalIndex;
-      if (!chosen.item.typed) untypedItems++;
-      createdItems++;
-    }
-  }
-  // Procore respondió 2xx, pero se comprueba releyendo la plantilla que las secciones
-  // existen de verdad antes de crear una inspección vacía.
-  await verifyTemplateSections(client, {
-    sectionsCol,
-    showPath:
-      scope === 'project'
-        ? `/rest/v1.0/projects/${projectId}/checklist/list_templates/${templateId}`
-        : `/rest/v1.0/companies/${companyId}/checklist/list_templates/${templateId}`,
-    templateId,
-    expected: sections.map((x) => x.name),
-    createdSectionIds,
-    sleep,
-  });
-  return { createdItems, untypedItems };
-}
-
-/** Nombres de secciones en una respuesta (lista de secciones o plantilla con sections[]). */
-function sectionNames(data: unknown): string[] {
-  const arr = Array.isArray(data)
-    ? data
-    : data && typeof data === 'object' && Array.isArray((data as { sections?: unknown }).sections)
-      ? (data as { sections: unknown[] }).sections
-      : [];
-  return arr.map((x) => extractName(x)).filter((n): n is string => n !== null);
-}
-
-function brief(data: unknown): string {
-  try {
-    const t = JSON.stringify(data);
-    return t.length > 300 ? `${t.slice(0, 300)}…` : t;
-  } catch {
-    return '[no serializable]';
-  }
-}
-
-/**
- * Relee la plantilla (colección de secciones y detalle de la plantilla) y lanza
- * un error explicativo si faltan secciones, aunque Procore aceptara los POST.
- */
-async function verifyTemplateSections(
-  client: ProcoreClient,
-  args: {
-    sectionsCol: Candidate;
-    showPath: string;
-    templateId: string;
-    expected: string[];
-    createdSectionIds: string[];
-    sleep: (ms: number) => Promise<void>;
-  },
-): Promise<void> {
-  const reads: { path: string; data: unknown }[] = [];
-  let missing: string[] = args.expected;
-  for (let attempt = 0; attempt <= PROPAGATION_DELAYS_MS.length && missing.length > 0; attempt++) {
-    if (attempt > 0) await args.sleep(PROPAGATION_DELAYS_MS[attempt - 1]!);
-    reads.length = 0;
-    const found = new Set<string>();
-    for (const c of [args.sectionsCol, { path: args.showPath }]) {
-      try {
-        const r = await client.getAt(c);
-        reads.push({ path: c.path, data: r.data });
-        for (const n of sectionNames(r.data)) found.add(normalizeForSearch(n));
-      } catch (e) {
-        reads.push({ path: c.path, data: e instanceof ProcoreApiError ? `HTTP ${e.status}` : 'error' });
-      }
-    }
-    missing = args.expected.filter((n) => !found.has(normalizeForSearch(n)));
-  }
-  if (missing.length > 0) {
-    throw new TemplateNotPopulatedError(
-      `Procore aceptó la creación de ${args.createdSectionIds.length} secciones (ruta ${args.sectionsCol.path}, ids ${args.createdSectionIds.join(', ')}), ` +
-        `pero al releer la plantilla ${args.templateId} no aparecen: ${missing.join(', ')}. ` +
-        `Relectura: ${reads.map((r) => `${r.path} → ${brief(r.data)}`).join(' | ')}`,
-    );
-  }
-}
-
-/** Intenta borrar la plantilla creada si su creación quedó incompleta. Devuelve true si se borró. */
-async function deleteTemplate(
-  client: ProcoreClient,
-  companyId: string,
-  projectId: string,
-  templateId: string,
-): Promise<boolean> {
-  for (const c of CANDIDATES.templateDelete(companyId, projectId, templateId)) {
-    try {
-      await client.deleteAt(c);
-      return true;
-    } catch {
-      /* se prueba la siguiente ruta */
-    }
-  }
-  return false;
-}
-
-/** Ítems de una inspección: de "show" (sections[].items[]) o, si no vienen, del listado de ítems. */
-async function readChecklistItems(
-  client: ProcoreClient,
-  projectId: string,
-  listId: string,
-  sleep: (ms: number) => Promise<void>,
-): Promise<ChecklistItemRef[]> {
-  const shown = await findFirst(client, CANDIDATES.checklistShow(projectId, listId), sleep, PROPAGATION_DELAYS_MS);
-  const fromShow = extractChecklistItems(shown.data);
-  if (fromShow.length > 0) return fromShow;
-  try {
-    const listed = await findFirst(client, CANDIDATES.checklistItems(projectId, listId), sleep, []);
-    return extractChecklistItems(Array.isArray(listed.data) ? { items: listed.data } : listed.data);
-  } catch {
-    return [];
-  }
-}
-
 export async function execute(input: ExecuteInput): Promise<ExecuteResult> {
   const { client, companyId, projectId, sections, prepared, webBase } = input;
   const reuse = input.reuseExisting;
@@ -422,6 +420,7 @@ export async function execute(input: ExecuteInput): Promise<ExecuteResult> {
   const today = input.today ?? todayIso();
   const sleep = input.sleep ?? defaultSleep;
   const retry = <T,>(fn: () => Promise<T>) => retryWhileNotVisible(fn, sleep);
+  const ctx: Ctx = { client, companyId, projectId, sections, sleep, retry };
   const steps = initialSteps();
   const summary: string[] = [];
 
@@ -433,7 +432,7 @@ export async function execute(input: ExecuteInput): Promise<ExecuteResult> {
 
   let current: StepId = 'template';
   try {
-    // 1. Plantilla con una sección por dominio y un ítem por elemento.
+    // 1. Plantilla de proyecto con una sección por dominio y un ítem por elemento.
     current = 'template';
     update('template', { status: 'running' });
     let templateId: string;
@@ -441,47 +440,52 @@ export async function execute(input: ExecuteInput): Promise<ExecuteResult> {
       templateId = existing.template.id;
       update('template', {
         status: 'reused',
-        detail: 'Se reutiliza la plantilla de compañía existente (sus ítems pueden diferir de la selección actual).',
+        detail: 'Se reutiliza la plantilla existente (sus ítems pueden diferir de la selección actual).',
+        url: templateWebUrl(webBase, projectId, templateId),
       });
       summary.push(`Plantilla reutilizada (id ${templateId}).`);
     } else {
-      // La plantilla se crea a nivel COMPAÑÍA: es el id que aceptan los endpoints de
-      // "Company Checklist Template Sections" (con un id de plantilla de proyecto dan 404).
-      const tpl = await client.createCompanyTemplate(companyId, buildTemplatePayload());
-      let id = extractId(tpl);
-      if (!id) {
-        // La respuesta no trae un id reconocible: se busca en el listado de plantillas de compañía.
-        id = await findCreatedTemplate(client, companyId, sleep);
-      }
-      if (!id) {
-        throw new Error(
-          'Procore creó la plantilla de compañía pero no se pudo obtener su id. Revisa el registro técnico y elimínala en Procore (Inspecciones de compañía) antes de reintentar.',
-        );
-      }
-      templateId = id;
       const totalItems = sections.reduce((n, s) => n + s.items.length, 0);
-      let stats: PopulateStats;
+      // Resto de una ejecución anterior: se usa como origen si se pidió reutilizar.
+      const reusingCompany = Boolean(reuse && existing.companyTemplate);
+      let companyTemplateId: string | null = reusingCompany ? existing.companyTemplate!.id : null;
+      let projectTemplateId: string | null = null;
+      let untypedItems = 0;
       try {
-        stats = await populateTemplate({ client, companyId, projectId, sections, sleep, retry }, 'company', templateId);
+        if (!companyTemplateId) {
+          companyTemplateId = await createCompanyTemplate(ctx);
+          untypedItems = await populateCompanyTemplate(ctx, companyTemplateId);
+        }
+        projectTemplateId = await copyToProject(ctx, companyTemplateId);
       } catch (e) {
-        const cleaned = await deleteTemplate(client, companyId, projectId, templateId);
+        // Limpieza de lo creado en este paso (nunca de lo reutilizado).
+        const cleaned =
+          companyTemplateId && !reusingCompany
+            ? await tryDelete(() => client.deleteCompanyTemplate(companyId, companyTemplateId!))
+            : true;
         summary.push(
           cleaned
             ? 'La plantilla quedó incompleta y se eliminó automáticamente para no dejar restos.'
-            : `Plantilla de compañía (id ${templateId}) incompleta: elimínala en Procore (Inspecciones de compañía) antes de reintentar.`,
+            : `Plantilla de compañía (id ${companyTemplateId}) incompleta: elimínala en Procore (Inspecciones de compañía) antes de reintentar.`,
         );
         throw e;
       }
+      templateId = projectTemplateId;
+      // La copia de proyecto es independiente: se elimina la plantilla de compañía intermedia.
+      const removed = await tryDelete(() => client.deleteCompanyTemplate(companyId, companyTemplateId!));
       update('template', {
-        status: stats.untypedItems > 0 ? 'warning' : 'done',
+        status: untypedItems > 0 ? 'warning' : 'done',
         detail:
-          `Plantilla de compañía: ${sections.length} secciones, ${totalItems} ítems.` +
-          (stats.untypedItems > 0 ? ` ${stats.untypedItems} ítems sin tipo número/texto: Procore rechazó el campo de tipo.` : ''),
+          `${sections.length} secciones, ${totalItems} ítems.` +
+          (untypedItems > 0 ? ` ${untypedItems} ítems con el tipo por defecto: Procore no aceptó el tipo número/texto.` : '') +
+          (removed ? '' : ' No se pudo borrar la plantilla de compañía intermedia.'),
+        url: templateWebUrl(webBase, projectId, templateId),
       });
-      summary.push(`Plantilla de compañía creada (id ${templateId}) con ${sections.length} secciones y ${totalItems} ítems.`);
+      summary.push(`Plantilla creada (id ${templateId}) con ${sections.length} secciones y ${totalItems} ítems.`);
+      if (!removed) summary.push(`Queda la plantilla de compañía intermedia (id ${companyTemplateId}); puedes borrarla.`);
     }
 
-    // 2. Inspección "Reporte de objetivos" desde la plantilla.
+    // 2. Inspección "Reporte de objetivos" desde la plantilla de proyecto.
     current = 'inspection';
     update('inspection', { status: 'running' });
     let listId: string;
@@ -495,9 +499,9 @@ export async function execute(input: ExecuteInput): Promise<ExecuteResult> {
       summary.push(`Inspección "${INSPECTION_NAME}" reutilizada (id ${listId}).`);
     } else {
       const created = await retry(() =>
-        postFirstAccepted(client, CANDIDATES.checklistCreate(projectId), [buildChecklistPayload({ projectId, templateId })]),
+        client.createChecklist(projectId, buildChecklistPayload({ templateId, inspectionDate: today })),
       );
-      const id = extractId(created.data);
+      const id = extractId(created);
       if (!id) throw new Error('Procore no devolvió el id de la inspección.');
       listId = id;
       update('inspection', { status: 'done', url: checklistWebUrl(webBase, projectId, listId) });
@@ -507,12 +511,10 @@ export async function execute(input: ExecuteInput): Promise<ExecuteResult> {
     // 3. Valores objetivo como respuesta de cada ítem (emparejados por nombre).
     current = 'responses';
     update('responses', { status: 'running' });
-    const listItems = await readChecklistItems(client, projectId, listId, sleep);
+    const listItems = await readChecklistItems(ctx, listId);
     const planned = sections.flatMap((s) => s.items.map((it) => ({ ...it, sectionName: s.name })));
     let written = 0;
     const missing: string[] = [];
-    let responseTargetPref = 0;
-    let responseBodyPref = 0;
     for (const p of planned) {
       const match =
         listItems.find((li) => sameName(li.name, p.name) && (li.sectionName === null || sameName(li.sectionName, p.sectionName))) ??
@@ -521,19 +523,13 @@ export async function execute(input: ExecuteInput): Promise<ExecuteResult> {
         missing.push(p.name);
         continue;
       }
-      const targets = preferFirst(CANDIDATES.itemResponses(projectId, listId, match.id), responseTargetPref);
-      const bodies = preferFirst(itemResponseBodies(p.valueType, p.target), responseBodyPref);
-      const res = await postFirstAccepted(
-        client,
-        targets.map((t) => t.item),
-        bodies.map((b) => b.item),
-      );
-      responseTargetPref = targets[targets.findIndex((t) => t.item === res.candidate)]!.originalIndex;
-      responseBodyPref = bodies[res.bodyIndex]!.originalIndex;
+      await retry(() => client.createItemResponse(projectId, match.id, buildItemResponsePayload(p.valueType, p.target)));
       written++;
     }
     if (written === 0 && planned.length > 0) {
-      throw new Error('No se encontró en la inspección ningún ítem que coincida con la selección.');
+      throw new Error(
+        `La inspección ${listId} no tiene ningún ítem que coincida con la selección (${listItems.length} ítems leídos).`,
+      );
     }
     if (missing.length > 0) {
       update('responses', {
@@ -551,25 +547,30 @@ export async function execute(input: ExecuteInput): Promise<ExecuteResult> {
     update('schedule', { status: 'running' });
     if (reuse && existing.schedule) {
       const sid = existing.schedule.id;
-      if (existing.schedule.endDate !== prepared.endDate) {
-        await client.updateSchedule(projectId, sid, buildScheduleEndDatePatch(prepared.endDate));
-        update('schedule', {
-          status: 'reused',
-          detail: `Se reutiliza la planificación existente; fecha fin actualizada a ${prepared.endDate}.`,
-          url: scheduleWebUrl(webBase, projectId),
-        });
-      } else {
-        update('schedule', {
-          status: 'reused',
-          detail: 'Se reutiliza la planificación existente.',
-          url: scheduleWebUrl(webBase, projectId),
-        });
-      }
+      const changed = existing.schedule.endDate !== prepared.endDate;
+      if (changed) await client.updateSchedule(projectId, sid, buildScheduleEndDatePatch(prepared.endDate));
+      update('schedule', {
+        status: 'reused',
+        detail: changed
+          ? `Se reutiliza la planificación existente; fecha fin actualizada a ${prepared.endDate}.`
+          : 'Se reutiliza la planificación existente.',
+        url: scheduleWebUrl(webBase, projectId),
+      });
       summary.push(`Planificación trimestral reutilizada (id ${sid}).`);
     } else {
-      const payload = buildSchedulePayload({ templateId, startDate: today, endDate: prepared.endDate });
-      const sch = await retry(() => client.createSchedule(projectId, payload));
-      const sid = extractId(sch);
+      // TODO(verify): valores de `frequency`; se prueban en orden (un 422 no crea nada).
+      const res = await retry(() =>
+        firstAccepted(
+          QUARTERLY_FREQUENCY_CANDIDATES.map(
+            (frequency) => () =>
+              client.createSchedule(
+                projectId,
+                buildSchedulePayload({ templateId, startDate: today, endDate: prepared.endDate, frequency }),
+              ),
+          ),
+        ),
+      );
+      const sid = extractId(res.value);
       update('schedule', {
         status: 'done',
         detail: `Trimestral desde ${today} hasta ${prepared.endDate}.`,

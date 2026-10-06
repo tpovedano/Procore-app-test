@@ -40,6 +40,7 @@ export function DuplicateDialog({ existing, onReuse, onAbort }: Props) {
 
   const rows = [
     existing.template && { k: 'Plantilla', v: existing.template.name },
+    existing.companyTemplate && { k: 'Plantilla (compañía)', v: existing.companyTemplate.name },
     existing.inspection && { k: 'Inspección', v: existing.inspection.name },
     existing.schedule && { k: 'Planificada', v: existing.schedule.name },
   ].filter(Boolean) as { k: string; v: string }[];

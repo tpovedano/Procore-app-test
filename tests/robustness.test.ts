@@ -30,7 +30,7 @@ describe('reintentos por propagación', () => {
     expect(n).toBe(3);
   });
 
-  it('reintenta 422 de list_template pero no otros 422', async () => {
+  it('reintenta 422 que menciona la plantilla pero no otros 422', async () => {
     let n = 0;
     await expect(
       retryWhileNotVisible(async () => {
@@ -51,43 +51,49 @@ describe('reintentos por propagación', () => {
 });
 
 describe('errores detallados', () => {
-  it('incluyen método y ruta y una pista para list_template_id', async () => {
+  it('incluyen método, ruta y el mensaje de Procore', async () => {
     const client = createProcoreClient(async () => {
       throw new ProcoreApiError('{"list_template_id":["is invalid"]}', 422);
     });
     const err = await client.createChecklist('2', {}).catch((e: unknown) => e);
     const text = describeError(err);
-    expect(text).toContain('[POST /rest/v1.0/checklist/lists]');
+    expect(text).toContain('[POST /rest/v1.0/projects/2/checklist/lists]');
     expect(text).toContain('is invalid');
-    expect(text).toMatch(/plantilla esté vacía o incompleta/);
   });
 });
 
-describe('plantilla sin id en la respuesta', () => {
-  it('la busca por nombre (la más reciente) y continúa', async () => {
+describe('ids ausentes en las respuestas de creación', () => {
+  it('busca la plantilla de compañía y la copia de proyecto por nombre (la más reciente) y continúa', async () => {
     const calls: ApiRequest[] = [];
-    let listed = 0;
+    let companyListed = 0;
     let id = 500;
+    const sections: { id: number; name: string }[] = [];
+    const items: { id: number; name: string }[] = [];
     const t: Transport = async (req) => {
       calls.push(req);
-      if (req.method === 'POST' && req.path.endsWith('/checklist/list_templates')) {
-        return { status: 201, data: { ok: true } }; // sin id
-      }
-      if (req.method === 'GET' && req.path.endsWith('/checklist/list_templates')) {
-        listed++;
+      const { method: m, path: p } = req;
+      if (m === 'POST' && p === '/rest/v1.0/companies/10/checklist/list_templates') return { status: 201, data: { ok: true } };
+      if (m === 'GET' && p === '/rest/v1.0/companies/10/checklist/list_templates') {
+        companyListed++;
         // Primera consulta: todavía no aparece (retraso de propagación).
-        return {
-          status: 200,
-          data: listed === 1 ? [] : [{ id: 41, name: TEMPLATE_NAME }, { id: 42, name: TEMPLATE_NAME }],
-        };
+        return { status: 200, data: companyListed === 1 ? [] : [{ id: 41, name: TEMPLATE_NAME }, { id: 42, name: TEMPLATE_NAME }] };
       }
-      if (req.method === 'GET' && /checklist\/lists\/\d+$/.test(req.path)) {
-        return { status: 200, data: { sections: [{ name: 'Seguridad', items: [{ id: 9, name: 'Incidentes (uds)' }] }] } };
+      if (p === '/rest/v1.0/companies/10/checklist/list_templates/42/sections') {
+        if (m === 'GET') return { status: 200, data: sections };
+        const s = { id: id++, name: (req.body as any).section.name };
+        sections.push(s);
+        return { status: 201, data: s };
       }
-      if (req.method === 'GET' && req.path.endsWith('/sections')) {
-        return { status: 200, data: calls.some((c) => c.method === 'POST' && c.path.endsWith('/sections')) ? [{ id: 1, name: 'Seguridad' }] : [] };
+      if (p === '/rest/v1.0/companies/10/inspection_templates/42/items') {
+        if (m === 'GET') return { status: 200, data: items };
+        const it = { id: id++, name: (req.body as any).inspection_template_item.name };
+        items.push(it);
+        return { status: 201, data: it };
       }
-      if (req.method === 'GET') return { status: 200, data: [] };
+      if (m === 'POST' && p.endsWith('/create_from_company_template')) return { status: 201, data: {} }; // sin id
+      if (m === 'GET' && p === '/rest/v1.0/projects/2/checklist/list_templates') return { status: 200, data: [{ id: 90, name: TEMPLATE_NAME }] };
+      if (m === 'GET' && p.endsWith('/checklist/list_items')) return { status: 200, data: [{ id: 9, name: 'Incidentes (uds)' }] };
+      if (m === 'GET') return { status: 200, data: [] };
       return { status: 201, data: { id: id++ } };
     };
     const plan = buildPlan(catalog, { inc: '1' });
@@ -100,13 +106,12 @@ describe('plantilla sin id en la respuesta', () => {
       prepared: { projectName: 'P', endDate: '2027-12-31', endDateField: 'completion_date', existing: {} },
       reuseExisting: false,
       webBase: 'https://sandbox.procore.com',
-      today: '2026-10-02',
+      today: '2026-10-06',
       sleep: noSleep,
     });
     expect(result.ok).toBe(true);
-    const section = calls.find((c) => c.path.endsWith('/sections'))!;
-    expect(section.path).toContain('/list_templates/42/sections');
-    expect(listed).toBe(2);
+    expect(companyListed).toBe(2);
+    expect((calls.find((c) => c.path === '/rest/v1.0/projects/2/checklist/lists' && c.method === 'POST')!.body as any).list_template_id).toBe(90);
   });
 });
 

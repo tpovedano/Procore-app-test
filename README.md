@@ -8,8 +8,7 @@ App de **panel lateral** de Procore que, a partir de un catálogo de elementos c
 
 No hay base de datos ni estado propio: todo lo que crea la app vive en Procore.
 
-> ⚠️ **Antes de usarlo en producción, lee la sección [TODOs pendientes de verificar](#todos-pendientes-de-verificar-contra-la-api).**
-> La referencia REST de Checklists (developers.procore.com/reference) no se pudo consultar mientras se escribía este código. Por eso todas las rutas y los campos que no se pudieron confirmar están aislados en **un solo archivo**, `src/lib/procoreSpec.ts`, y marcados con `TODO(verify)`.
+> Las rutas y los cuerpos de la API están **verificados contra la referencia REST de Procore** y concentrados en `src/lib/procoreSpec.ts`. Quedan dos detalles que la referencia no enumera (los valores de `frequency` y del `type` de ítem); la app los resuelve probando variantes. Ver [Pendientes de verificar](#todos-pendientes-de-verificar-contra-la-api).
 
 ---
 
@@ -57,14 +56,23 @@ No hay base de datos ni estado propio: todo lo que crea la app vive en Procore.
 └── vercel.json                       Cabeceras CSP / frame-ancestors
 ```
 
-**Flujo de "Crear"**
+**Flujo de "Crear"** (nombres de endpoint según la referencia de Procore)
 
-1. `GET /rest/v1.0/projects/{id}`: se lee la fecha fin del proyecto. Si no existe o ya pasó, se muestra un error y **no se crea nada**.
-2. Se buscan por nombre (con paginación) la plantilla, la inspección y la planificada. Si alguna existe, la app ofrece **Reutilizar** o **Cancelar**.
-3. Se crea la plantilla, luego una sección por cada dominio con elementos seleccionados y después un ítem por elemento. El nombre del ítem es `"{label} ({unit})"`, o `"{label}"` si no hay unidad.
-4. Se crea la inspección "Reporte de objetivos" desde la plantilla. Después se leen sus ítems y se carga cada valor objetivo como respuesta (`number_value` o `text_value`).
-5. Se crea la planificada trimestral desde hoy hasta la fecha fin del proyecto. Sus ítems no llevan valor.
-6. Se muestra un resumen con enlaces a Procore. Si un paso falla, el proceso se detiene y el resumen indica qué se creó y qué no.
+1. **Show project** (`GET /rest/v1.0/projects/{id}?company_id=`): fecha fin = `completion_date` (o `estimated_completion_date`). Si no existe o ya pasó, se muestra un error y **no se crea nada**.
+2. Duplicados por nombre (con paginación): plantillas de proyecto y de compañía, inspecciones y planificadas. Si alguna existe, la app ofrece **Reutilizar** o **Cancelar**.
+3. **Plantilla.** La API solo permite añadir secciones e ítems a plantillas **de compañía**, así que:
+   1. *Create Company Checklist Template*: `POST /companies/{cid}/checklist/list_templates`, con cuerpo `{list_template:{name, description}}`.
+   2. *Create Company Checklist Template Section*: `POST /companies/{cid}/checklist/list_templates/{tid}/sections`, con cuerpo `{section:{name, position}}`. Una por dominio con selección.
+   3. *Create Company Inspection Template Item*: `POST /companies/{cid}/inspection_templates/{tid}/items`, con cuerpo `{inspection_template_item:{name, position, section_id, type}}`. Uno por elemento, con nombre `"{label} ({unit})"` o `"{label}"`. El `type` sale de *List Available Checklist Item Types*.
+   4. Relectura de secciones e ítems para comprobar que existen.
+   5. *Create a Project Checklist Template from a Company Checklist Template*: `POST /projects/{pid}/checklist/list_templates/create_from_company_template`, con cuerpo `{source_template_id}`. Copia secciones e ítems.
+   6. *Delete Company Checklist Template*: se borra la plantilla de compañía intermedia.
+4. **Inspección** (*Create Checklist (Inspection)*): `POST /projects/{pid}/checklist/lists`, con cuerpo `{list_template_id, list:{…}}`. Toma el nombre de la plantilla: **"Reporte de objetivos"**.
+5. **Valores objetivo:**
+   - se leen los ítems con *List Checklist (Inspections) Items* (`filters[list_id]`) y sus secciones con *List Checklist (Inspection) Sections*;
+   - se carga cada valor con *Create Checklist Item Response*: `POST /projects/{pid}/checklist/items/{item_id}/item_response`, con cuerpo `{item_response:{number_value|text_value}}`.
+6. **Planificada** (*Create a Checklist (Inspection) Schedule*): `POST /projects/{pid}/checklist/schedules`, con cuerpo `{schedule:{name, inspection_template_id, first_inspection_due_at, ends_at, frequency}}`. Va desde hoy hasta la fecha fin del proyecto, y sus ítems no llevan valor.
+7. Se muestra un resumen con enlaces a Procore. Si un paso falla, el proceso se detiene, se borra lo que quedó a medias de la plantilla y el resumen indica qué se creó y qué no.
 
 **Autenticación**
 
@@ -238,33 +246,16 @@ POST /rest/v1.0/webhooks/hooks/{hook_id}/triggers
 
 ## TODOs pendientes de verificar contra la API
 
-> **Descubrimiento automático.** Como la referencia REST no se pudo consultar, las rutas de secciones, ítems, inspección y respuestas se descubren en tiempo de ejecución (`src/lib/adaptive.ts`):
-> primero se localiza la colección con **GET** (sin efectos) y después se hace el **POST**; un 404 pasa a la siguiente ruta y un 400/422 a la siguiente variante de cuerpo (ninguno crea nada). Lo que funciona se reutiliza en las siguientes llamadas.
-> Si la plantilla queda incompleta, la app intenta **borrarla** para no dejar restos.
->
-> **Plantilla a nivel compañía.** Las secciones e ítems de plantilla solo se pueden crear con los endpoints de compañía (*Company Checklist Template Sections*), que exigen el id de una plantilla **de compañía**: con el id de una plantilla de proyecto devuelven 404. Por eso la app crea la plantilla con `POST /rest/v1.0/companies/{cid}/checklist/list_templates`, le añade secciones e ítems, **la relee** para comprobar que existen y crea la inspección y la planificada con ese `list_template_id`. Los duplicados se buscan en `GET /rest/v1.0/companies/{cid}/checklist/list_templates`.
-> TODO(verify): que *Create Checklist* y *Checklist Schedules* acepten una plantilla de compañía; si no, hará falta el endpoint que importa una plantilla de compañía al proyecto.
-> En el panel, **Herramientas de soporte → Diagnóstico de API** hace solo GET y genera un informe copiable con las rutas que existen en tu cuenta y ejemplos reales de respuesta: con él se pueden fijar las rutas definitivas dejando una sola candidata en `CANDIDATES`.
+Las rutas y los cuerpos se verificaron contra la referencia REST de Procore (área *Project Management / Inspections* y *Core / Portfolio*). Lo que la referencia **no detalla** se resuelve en tiempo de ejecución, sin crear nada por error: un `422` no crea nada y se pasa a la siguiente variante.
 
-Todos están en **`src/lib/procoreSpec.ts`**. Cada punto se corrige en una sola función o constante.
-
-| # | Qué verificar | Dónde (`procoreSpec.ts`) | Supuesto actual |
+| # | Qué falta confirmar | Dónde (`procoreSpec.ts`) | Comportamiento actual |
 | --- | --- | --- | --- |
-| 1 | Ruta de "Show Project" y **campo de fecha fin** | `ENDPOINTS.showProject`, `PROJECT_END_DATE_FIELDS` | `GET /rest/v1.0/projects/{id}?company_id=`; prueba primero `completion_date` y luego `projected_finish_date` |
-| 2 | List y Create de **Company Checklist Templates** | `paths.companyTemplates`, `buildTemplatePayload` | La plantilla se crea **a nivel compañía**: `POST /rest/v1.0/companies/{cid}/checklist/list_templates` (el listado `GET` está confirmado y da los ids que aceptan las secciones). Cuerpo `{ list_template: { name, description } }` pendiente de confirmar |
-| 3 | Crear **sección** de plantilla | `CANDIDATES.templateSections`, `sectionBodies()` | **Descubrimiento automático**: GET a 3 rutas candidatas (company → project → `/checklist/list_templates/{tid}/sections`) y POST en la que exista; cuerpo `{ section: {…} }` o plano. La de proyecto devolvió 404 en sandbox |
-| 4 | Crear **ítem** de plantilla | `CANDIDATES.templateItems`, `itemBodies()` | Ruta confirmada (*Create Company Inspection Template Item*): `POST /rest/v1.0/companies/{cid}/inspection_templates/{tid}/items`. Pendiente: campo de sección en el cuerpo (se envía `section_id`) y de tipo; 4 variantes (envuelto/plano, con/sin tipo) |
-| 5 | **Tipo de ítem** número/texto (*Checklist Item Types*) | `itemTypeFields()` | `{ item_type: 'number' \| 'text' }` |
-| 6 | Cuerpo de **Create Checklist** desde plantilla | `CANDIDATES.checklistCreate`, `buildChecklistPayload()` | `POST /rest/v1.0/checklist/lists?project_id=` y, si da 404, `/projects/{pid}/checklist/lists`; cuerpo `{ project_id, list_template_id, list: { name } }` |
-| 7 | **Show Checklist** devuelve las secciones con sus ítems | `CANDIDATES.checklistShow`, `CANDIDATES.checklistItems`, `extractChecklistItems()` | `{ sections: [{ name, items: [{ id, name }] }] }`; si no trae ítems, se listan aparte |
-| 8 | **Checklist Item Responses**: ruta y formato | `CANDIDATES.itemResponses`, `itemResponseBodies()` | 3 rutas candidatas; cuerpo `{ item_response: { number_value \| text_value } }` o plano |
-| 9 | **Checklist Schedules**: List, Create y Update | `paths.schedules`, `paths.schedule`, `buildSchedulePayload()`, `buildScheduleEndDatePatch()` | `{ schedule: { name, list_template_id, start_date, end_date, … } }` |
-| 10 | **Periodicidad trimestral** del schedule | `quarterlyRecurrenceFields()` | `{ frequency: 'monthly', interval: 3, day_of_month }` |
-| 11 | Campo `end_date` en la respuesta del schedule | `extractScheduleEndDate()` | `end_date` |
-| 12 | URL web de plantillas y planificadas | `templateWebUrl()`, `scheduleWebUrl()` | `/:pid/project/checklists/list_templates/:id` y `/:pid/project/checklists` |
-| 13 | Nombre del recurso de webhook cuando cambia la fecha fin | `PROJECT_WEBHOOK_RESOURCES` | `Projects`, `Project Dates` |
-| 14 | Paginación (`page`/`per_page`) en los listados de checklist | `procore.ts → listAll` | `per_page=100`, sigue `Link rel="next"` |
-| 15 | Permisos mínimos (Inspections: Standard o Admin) y DMSA para el webhook | Developer Portal | — |
+| 1 | Valores admitidos de `frequency` en *Create a Checklist (Inspection) Schedule* | `QUARTERLY_FREQUENCY_CANDIDATES` | Prueba `quarterly`, `every_3_months` y `every_three_months`, en ese orden. El **Diagnóstico de API** muestra las planificadas existentes con su `frequency` real |
+| 2 | Valor del campo `type` en *Create Company Inspection Template Item* | `itemTypeCandidates()` | Lee *List Available Checklist Item Types* y prueba los valores cuyo nombre indique número o texto. Si ninguno vale, crea el ítem con el tipo por defecto y lo avisa |
+| 3 | Forma de la respuesta de las creaciones (dónde viene el `id`) | `extractId()` | Acepta `{id}`, `{data:{id}}` u objeto envuelto. Si falta, lo busca por nombre en el listado |
+| 4 | URL web de una plantilla de proyecto | `templateWebUrl()` | `/:pid/project/checklists/list_templates/:id` |
+| 5 | Nombre del recurso de webhook cuando cambia el proyecto | `PROJECT_WEBHOOK_RESOURCES` | `Projects` o `Project Dates`. Se puede consultar con *List Company Webhooks Resources* |
+| 6 | Permisos | Developer Portal | Inspections a nivel **compañía** (Admin, para crear y borrar plantillas de compañía) y **proyecto**; Projects (lectura); DMSA para el webhook |
 
 **Confirmado en la documentación oficial** (repositorio `procore/documentation`):
 
@@ -280,13 +271,13 @@ Todos están en **`src/lib/procoreSpec.ts`**. Cada punto se corrige en una sola 
 - `GET /rest/v1.0/me`.
 - Patrón de URL `/:project_id/project/checklists/lists/:id` (vista `inspections.detail`).
 
-Las rutas `POST /rest/v1.0/checklist/lists` y `POST /rest/v1.0/projects/{project_id}/checklist/schedules` vienen del enunciado. El catálogo `src/catalog.json` usa el esquema v3: el dominio tiene `id` y `name` (también se acepta `label`), y cada elemento tiene `id`, `label`, `unit` y `valueType`.
+El catálogo `src/catalog.json` usa el esquema v3: el dominio tiene `id` y `name` (también se acepta `label`), y cada elemento tiene `id`, `label`, `unit` y `valueType`.
 
 ---
 
 ## Decisiones de diseño
 
-- **Un solo archivo de contrato** (`procoreSpec.ts`). Ajustar la app a la API real no exige tocar la UI ni la orquestación.
+- **Un solo archivo de contrato** (`procoreSpec.ts`), verificado contra la referencia de Procore. Cada ruta indica el nombre del endpoint en la referencia.
 - **Proxy con allowlist** en lugar de dar el token al navegador. Aunque alguien obtuviera la sesión, solo podría hacer las operaciones que necesita la app.
 - **Duplicados por nombre exacto**, sin distinguir mayúsculas ni tildes.
   - Al *reutilizar* una inspección se actualizan sus valores.

@@ -3,26 +3,34 @@
  *  CONTRATO CON LA API DE PROCORE: único lugar con rutas, campos y payloads.
  * ════════════════════════════════════════════════════════════════════════════
  *
- * Todo lo que depende de la referencia REST de Procore está aquí y en ningún
- * otro sitio. Cada elemento lleva una marca:
+ * Verificado contra la referencia REST de Procore (skill /procore-api, área
+ * "Project Management / Inspections" y "Core / Portfolio"). Cada endpoint indica
+ * su nombre en la referencia. Lo que la referencia NO detalla está marcado con
+ * TODO(verify) y se resuelve en tiempo de ejecución probando variantes:
+ *   · valores admitidos de `frequency` en Checklist Schedules;
+ *   · valor de `type` de un ítem de plantilla (se toma de List Checklist Item Types).
  *
- *   VERIFIED     → confirmado en la documentación oficial (repo procore/documentation)
- *                  o en el enunciado del proyecto.
- *   TODO(verify) → NO se pudo confirmar contra la referencia REST
- *                  (developers.procore.com/reference). Hay que revisarlo antes
- *                  de usarlo en producción. Ver la lista de TODOs en el README.
- *
- * Si algo no coincide con la referencia, corrígelo SOLO en este archivo.
+ * Flujo de plantilla (la API no permite añadir secciones/ítems a una plantilla
+ * de proyecto; sí a una de compañía, que luego se copia al proyecto):
+ *   1. Create Company Checklist Template
+ *   2. Create Company Checklist Template Section (una por dominio)
+ *   3. Create Company Inspection Template Item (uno por elemento, con section_id)
+ *   4. Create a Project Checklist Template from a Company Checklist Template
+ *   5. Delete Company Checklist Template (limpieza; la copia de proyecto es independiente)
  */
 
 import type { ValueType } from './catalog.js';
 import { toIsoDate } from './dates.js';
 import type { PlannedItem } from './selection.js';
 
-// ─── Nombres de los objetos que crea la app (sirven también para detectar duplicados) ───
+// ─── Nombres de los objetos que crea la app ──────────────────────────────────
 
+/**
+ * La inspección toma el nombre de su plantilla (Create Checklist no admite `name`
+ * en `list`), así que la plantilla se llama igual que la inspección pedida.
+ */
 export const INSPECTION_NAME = 'Reporte de objetivos';
-export const TEMPLATE_NAME = 'Plantilla · Reporte de objetivos';
+export const TEMPLATE_NAME = INSPECTION_NAME;
 export const SCHEDULE_NAME = 'Medición trimestral de objetivos';
 
 // ─── Endpoints ────────────────────────────────────────────────────────────────
@@ -30,253 +38,86 @@ export const SCHEDULE_NAME = 'Medición trimestral de objetivos';
 export type HttpMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE';
 type Id = number | string;
 
-export interface EndpointSpec {
-  method: HttpMethod;
-  /** Plantilla de ruta, solo para documentación y para la allowlist del proxy. */
-  template: string;
-  verified: boolean;
-  note: string;
-}
-
-export const ENDPOINTS = {
-  me: {
-    method: 'GET',
-    template: '/rest/v1.0/me',
-    verified: true,
-    note: 'Documentado en "OAuth 2.0 Authorization Code Grant Flow".',
-  },
-  showProject: {
-    method: 'GET',
-    template: '/rest/v1.0/projects/{project_id}?company_id={company_id}',
-    verified: false,
-    note: 'TODO(verify): "List Projects" (GET /rest/v1.0/projects?company_id=) está documentado; confirmar "Show Project" y el nombre del campo de fecha fin.',
-  },
-  listCompanyTemplates: {
-    method: 'GET',
-    template: '/rest/v1.0/companies/{company_id}/checklist/list_templates',
-    verified: true,
-    note: 'Confirmado por el usuario: devuelve los ids de plantilla que usan "Company Checklist Template Sections".',
-  },
-  createCompanyTemplate: {
-    method: 'POST',
-    template: '/rest/v1.0/companies/{company_id}/checklist/list_templates',
-    verified: false,
-    note: 'TODO(verify): Company Checklist Templates → Create. Cuerpo { list_template: { name, description } }.',
-  },
-  listProjectTemplates: {
-    method: 'GET',
-    template: '/rest/v1.0/projects/{project_id}/checklist/list_templates',
-    verified: false,
-    note: 'TODO(verify): Project Checklist Templates → List.',
-  },
-  createProjectTemplate: {
-    method: 'POST',
-    template: '/rest/v1.0/projects/{project_id}/checklist/list_templates',
-    verified: false,
-    note: 'TODO(verify): Project Checklist Templates → Create. Cuerpo { list_template: {...} }.',
-  },
-  createTemplateSection: {
-    method: 'POST',
-    template: '/rest/v1.0/companies/{company_id}/checklist/list_templates/{list_template_id}/sections',
-    verified: false,
-    note:
-      'Existe "Company Checklist Template Sections → Create" con {list_template_id} (confirmado por el usuario); la ruta ' +
-      '/projects/{project_id}/…/sections devolvió 404 en sandbox. Se usa con el id de la plantilla de PROYECTO. ' +
-      'TODO(verify): ruta exacta, cuerpo y que acepte plantillas de proyecto.',
-  },
-  createTemplateItem: {
-    method: 'POST',
-    template: '/rest/v1.0/companies/{company_id}/inspection_templates/{inspection_template_id}/items',
-    verified: true,
-    note: 'Confirmado por el usuario ("Create Company Inspection Template Item"). TODO(verify): campo de sección (section_id) y tipo de ítem en el cuerpo.',
-  },
-  listChecklists: {
-    method: 'GET',
-    template: '/rest/v1.0/checklist/lists?project_id={project_id}',
-    verified: false,
-    note: 'TODO(verify): Checklists → List (misma colección que el POST identificado).',
-  },
-  createChecklist: {
-    method: 'POST',
-    template: '/rest/v1.0/checklist/lists?project_id={project_id}',
-    verified: true,
-    note: 'Ruta identificada en el enunciado. TODO(verify): forma exacta del cuerpo ({ list_template_id, list: {...} }).',
-  },
-  showChecklist: {
-    method: 'GET',
-    template: '/rest/v1.0/checklist/lists/{list_id}?project_id={project_id}',
-    verified: false,
-    note: 'TODO(verify): Checklists → Show; se asume que devuelve sections[].items[].',
-  },
-  createItemResponse: {
-    method: 'POST',
-    template: '/rest/v1.0/checklist/lists/{list_id}/items/{item_id}/item_responses?project_id={project_id}',
-    verified: false,
-    note: 'TODO(verify): Checklist Item Responses → Create; campos number_value / text_value.',
-  },
-  listSchedules: {
-    method: 'GET',
-    template: '/rest/v1.0/projects/{project_id}/checklist/schedules',
-    verified: false,
-    note: 'TODO(verify): Checklist Schedules → List (la ruta base aparece en "Checklist Schedule Attachments").',
-  },
-  createSchedule: {
-    method: 'POST',
-    template: '/rest/v1.0/projects/{project_id}/checklist/schedules',
-    verified: true,
-    note: 'Ruta identificada en el enunciado. TODO(verify): campos del cuerpo y de periodicidad.',
-  },
-  updateSchedule: {
-    method: 'PATCH',
-    template: '/rest/v1.0/projects/{project_id}/checklist/schedules/{schedule_id}',
-    verified: false,
-    note: 'TODO(verify): Checklist Schedules → Update (usado por el webhook para la fecha fin).',
-  },
-} as const satisfies Record<string, EndpointSpec>;
-
-export type EndpointName = keyof typeof ENDPOINTS;
-
 const enc = (v: Id) => encodeURIComponent(String(v));
 
-/** Rutas concretas (sin query). Los parámetros de query se pasan aparte. */
+/** Rutas (sin query). Entre corchetes, el nombre del endpoint en la referencia. */
 export const paths = {
+  /** [Show me] */
   me: () => '/rest/v1.0/me',
+  /** [Show project] query: company_id* */
   showProject: (projectId: Id) => `/rest/v1.0/projects/${enc(projectId)}`,
-  projectTemplates: (projectId: Id) => `/rest/v1.0/projects/${enc(projectId)}/checklist/list_templates`,
-  /** Plantillas de compañía: aquí se crea la plantilla (sus secciones/ítems solo existen a nivel compañía). */
+
+  /** [List / Create Company Checklist Template] */
   companyTemplates: (companyId: Id) => `/rest/v1.0/companies/${enc(companyId)}/checklist/list_templates`,
-  checklists: () => '/rest/v1.0/checklist/lists',
+  /** [Show / Delete Company Checklist Template] */
+  companyTemplate: (companyId: Id, templateId: Id) =>
+    `/rest/v1.0/companies/${enc(companyId)}/checklist/list_templates/${enc(templateId)}`,
+  /** [List / Create Company Checklist Template Section] body: section*{name,position} */
+  companyTemplateSections: (companyId: Id, templateId: Id) =>
+    `/rest/v1.0/companies/${enc(companyId)}/checklist/list_templates/${enc(templateId)}/sections`,
+  /** [List / Create Company Inspection Template Item] body: inspection_template_item*{name,position,section_id,type,…} */
+  companyTemplateItems: (companyId: Id, templateId: Id) =>
+    `/rest/v1.0/companies/${enc(companyId)}/inspection_templates/${enc(templateId)}/items`,
+
+  /** [List Project Checklist Templates] */
+  projectTemplates: (projectId: Id) => `/rest/v1.0/projects/${enc(projectId)}/checklist/list_templates`,
+  /** [Show / Delete Project Checklist Template] */
+  projectTemplate: (projectId: Id, templateId: Id) =>
+    `/rest/v1.0/projects/${enc(projectId)}/checklist/list_templates/${enc(templateId)}`,
+  /** [Create a Project Checklist Template from a Company Checklist Template] body: source_template_id* */
+  projectTemplateFromCompany: (projectId: Id) =>
+    `/rest/v1.0/projects/${enc(projectId)}/checklist/list_templates/create_from_company_template`,
+
+  /** [List Available Checklist Item Types] query: company_id (o project_id) */
+  itemTypes: () => '/rest/v1.0/checklist/item_types',
+
+  /** [List / Create Checklist (Inspection)] body: list_template_id*, list*{…} */
+  projectLists: (projectId: Id) => `/rest/v1.0/projects/${enc(projectId)}/checklist/lists`,
+  /** [List Checklist (Inspections) Items] query: filters[list_id] */
+  listItems: (projectId: Id) => `/rest/v1.0/projects/${enc(projectId)}/checklist/list_items`,
+  /** [List Checklist (Inspection) Sections] query: filters[list_id] */
+  listSections: (projectId: Id) => `/rest/v1.0/projects/${enc(projectId)}/checklist/list_sections`,
+  /** [Create Checklist Item Response] body: item_response*{text_value,number_value,…} */
+  itemResponse: (projectId: Id, itemId: Id) =>
+    `/rest/v1.0/projects/${enc(projectId)}/checklist/items/${enc(itemId)}/item_response`,
+
+  /** [List / Create a Checklist (Inspection) Schedule] */
   schedules: (projectId: Id) => `/rest/v1.0/projects/${enc(projectId)}/checklist/schedules`,
+  /** [Update a Checklist (Inspection) Schedule] */
   schedule: (projectId: Id, scheduleId: Id) =>
     `/rest/v1.0/projects/${enc(projectId)}/checklist/schedules/${enc(scheduleId)}`,
 };
 
-// ─── Rutas candidatas (descubrimiento) ───────────────────────────────────────
-//
-// Las rutas de secciones, ítems, inspección y respuestas NO se han podido
-// verificar contra la referencia. En sandbox:
-//   · /projects/{pid}/checklist/list_templates/{tid}/sections → 404.
-//   · Existe "Company Checklist Template Sections" (POST con {list_template_id}).
-// La app prueba estas candidatas EN ORDEN: primero con GET (sin efectos) para
-// saber qué colección existe; después hace el POST en la que respondió 2xx.
-// Para fijar una ruta definitiva, basta con dejar una sola candidata.
-
-export interface Candidate {
-  path: string;
-  query?: Record<string, string | number>;
-}
-
-export const CANDIDATES = {
-  /** Colección de secciones de una plantilla. */
-  templateSections: (companyId: Id, projectId: Id, templateId: Id): Candidate[] => [
-    { path: `/rest/v1.0/companies/${enc(companyId)}/checklist/list_templates/${enc(templateId)}/sections` },
-    { path: `/rest/v1.0/projects/${enc(projectId)}/checklist/list_templates/${enc(templateId)}/sections` },
-    { path: `/rest/v1.0/checklist/list_templates/${enc(templateId)}/sections`, query: { project_id: String(projectId) } },
-  ],
-  /** Colección de ítems de una sección, bajo la misma raíz que funcionó para secciones. */
-  /**
-   * Ítems de plantilla. Confirmado por el usuario en la referencia ("Create Company
-   * Inspection Template Item"): POST /rest/v1.0/companies/{company_id}/inspection_templates/{id}/items.
-   * La sección no va en la ruta, sino en el cuerpo (ver itemBodies).
-   */
-  templateItems: (companyId: Id, templateId: Id): Candidate[] => [
-    { path: `/rest/v1.0/companies/${enc(companyId)}/inspection_templates/${enc(templateId)}/items` },
-  ],
-  /** Plantillas de compañía (alternativa si la de proyecto no admite secciones por la API). */
-  companyTemplates: (companyId: Id): Candidate => ({ path: `/rest/v1.0/companies/${enc(companyId)}/checklist/list_templates` }),
-  /** Borrado de la plantilla si su creación queda incompleta. */
-  templateDelete: (companyId: Id, projectId: Id, templateId: Id): Candidate[] => [
-    { path: `/rest/v1.0/companies/${enc(companyId)}/checklist/list_templates/${enc(templateId)}` },
-    { path: `/rest/v1.0/projects/${enc(projectId)}/checklist/list_templates/${enc(templateId)}` },
-  ],
-  /** Crear inspección: la ruta del enunciado y la variante con proyecto en la ruta. */
-  checklistCreate: (projectId: Id): Candidate[] => [
-    { path: '/rest/v1.0/checklist/lists', query: { project_id: String(projectId) } },
-    { path: `/rest/v1.0/projects/${enc(projectId)}/checklist/lists` },
-  ],
-  /** Leer una inspección (para obtener los ids de sus ítems). */
-  checklistShow: (projectId: Id, listId: Id): Candidate[] => [
-    { path: `/rest/v1.0/checklist/lists/${enc(listId)}`, query: { project_id: String(projectId) } },
-    { path: `/rest/v1.0/projects/${enc(projectId)}/checklist/lists/${enc(listId)}` },
-  ],
-  /** Listar ítems de una inspección, si "show" no los incluye. */
-  checklistItems: (projectId: Id, listId: Id): Candidate[] => [
-    { path: `/rest/v1.0/checklist/lists/${enc(listId)}/items`, query: { project_id: String(projectId) } },
-    { path: `/rest/v1.0/projects/${enc(projectId)}/checklist/lists/${enc(listId)}/items` },
-  ],
-  /** Respuesta de un ítem de la inspección. */
-  itemResponses: (projectId: Id, listId: Id, itemId: Id): Candidate[] => [
-    {
-      path: `/rest/v1.0/checklist/lists/${enc(listId)}/items/${enc(itemId)}/item_responses`,
-      query: { project_id: String(projectId) },
-    },
-    { path: `/rest/v1.0/checklist/items/${enc(itemId)}/item_responses`, query: { project_id: String(projectId) } },
-    { path: `/rest/v1.0/projects/${enc(projectId)}/checklist/lists/${enc(listId)}/items/${enc(itemId)}/item_responses` },
-  ],
-};
-
-/** Variantes de cuerpo: envuelto por tipo (convención de Procore v1.0) y plano. */
-export function sectionBodies(name: string, position: number): Record<string, unknown>[] {
-  return [{ section: { name, position } }, { name, position }];
-}
-
 /**
- * Variantes de cuerpo de ítem para "Create Company Inspection Template Item".
- * TODO(verify): nombre del campo de sección (se asume `section_id`) y del tipo de
- * respuesta (Checklist Item Types). Si Procore rechaza el tipo, se crea el ítem
- * sin tipo y se avisa.
+ * Allowlist del proxy serverless: solo estas combinaciones método+ruta llegan a
+ * Procore (ids numéricos). Corresponde 1:1 con `paths`.
  */
-export function itemBodies(
-  item: Pick<PlannedItem, 'name' | 'valueType'>,
-  position: number,
-  sectionId: Id,
-): { body: Record<string, unknown>; typed: boolean }[] {
-  const typeFields = itemTypeFields(item.valueType);
-  const base = { name: item.name, position, section_id: Number(sectionId) };
-  return [
-    { body: { item: { ...base, ...typeFields } }, typed: true },
-    { body: { ...base, ...typeFields }, typed: true },
-    { body: { item: base }, typed: false },
-    { body: base, typed: false },
-  ];
-}
-
-export function itemResponseBodies(valueType: ValueType, value: number | string): Record<string, unknown>[] {
-  const field = valueType === 'number' ? { number_value: Number(value) } : { text_value: String(value) };
-  return [{ item_response: field }, field];
-}
-
-/**
- * Allowlist del proxy serverless: solo estas combinaciones método+ruta pueden
- * llegar a Procore. Los ids deben ser numéricos.
- *
- * - GET: cualquier recurso de checklist/inspecciones (solo lectura), para el
- *   descubrimiento de rutas y el diagnóstico.
- * - POST/PATCH/DELETE: solo las rutas candidatas de creación (ver CANDIDATES)
- *   y el borrado de la plantilla creada por la app si su creación falla.
- */
-const SEG = '(?:\\/(?:[a-z_]+|\\d+))*';
-const SCOPE = '(?:projects|companies)\\/\\d+';
+const P = '\\/rest\\/v1\\.0';
+const re = (s: string) => new RegExp(`^${P}${s}$`);
 export const PROXY_ALLOWLIST: ReadonlyArray<{ method: HttpMethod; pattern: RegExp }> = [
-  { method: 'GET', pattern: /^\/rest\/v1\.0\/me$/ },
-  { method: 'GET', pattern: /^\/rest\/v1\.0\/projects\/\d+$/ },
-  { method: 'GET', pattern: new RegExp(`^\\/rest\\/v1\\.0\\/${SCOPE}\\/checklist${SEG}$`) },
-  { method: 'GET', pattern: new RegExp(`^\\/rest\\/v1\\.0\\/checklist${SEG}$`) },
-  { method: 'POST', pattern: /^\/rest\/v1\.0\/(?:projects|companies)\/\d+\/checklist\/list_templates$/ },
-  {
-    method: 'POST',
-    pattern: /^\/rest\/v1\.0\/(?:(?:projects|companies)\/\d+\/)?checklist\/list_templates\/\d+\/sections(?:\/\d+\/items)?$/,
-  },
-  { method: 'POST', pattern: /^\/rest\/v1\.0\/companies\/\d+\/inspection_templates\/\d+\/items$/ },
-  { method: 'GET', pattern: /^\/rest\/v1\.0\/companies\/\d+\/inspection_templates(?:\/\d+(?:\/items)?)?$/ },
-  { method: 'DELETE', pattern: /^\/rest\/v1\.0\/(?:projects|companies)\/\d+\/checklist\/list_templates\/\d+$/ },
-  { method: 'POST', pattern: /^\/rest\/v1\.0\/(?:projects\/\d+\/)?checklist\/lists$/ },
-  {
-    method: 'POST',
-    pattern: /^\/rest\/v1\.0\/(?:projects\/\d+\/)?checklist\/(?:lists\/\d+\/)?items\/\d+\/item_responses$/,
-  },
-  { method: 'POST', pattern: /^\/rest\/v1\.0\/projects\/\d+\/checklist\/schedules$/ },
-  { method: 'PATCH', pattern: /^\/rest\/v1\.0\/projects\/\d+\/checklist\/schedules\/\d+$/ },
+  { method: 'GET', pattern: re('\\/me') },
+  { method: 'GET', pattern: re('\\/projects\\/\\d+') },
+  { method: 'GET', pattern: re('\\/companies\\/\\d+\\/checklist\\/list_templates') },
+  { method: 'POST', pattern: re('\\/companies\\/\\d+\\/checklist\\/list_templates') },
+  { method: 'GET', pattern: re('\\/companies\\/\\d+\\/checklist\\/list_templates\\/\\d+') },
+  { method: 'DELETE', pattern: re('\\/companies\\/\\d+\\/checklist\\/list_templates\\/\\d+') },
+  { method: 'GET', pattern: re('\\/companies\\/\\d+\\/checklist\\/list_templates\\/\\d+\\/sections') },
+  { method: 'POST', pattern: re('\\/companies\\/\\d+\\/checklist\\/list_templates\\/\\d+\\/sections') },
+  { method: 'GET', pattern: re('\\/companies\\/\\d+\\/inspection_templates\\/\\d+\\/items') },
+  { method: 'POST', pattern: re('\\/companies\\/\\d+\\/inspection_templates\\/\\d+\\/items') },
+  { method: 'GET', pattern: re('\\/projects\\/\\d+\\/checklist\\/list_templates') },
+  { method: 'GET', pattern: re('\\/projects\\/\\d+\\/checklist\\/list_templates\\/\\d+') },
+  { method: 'DELETE', pattern: re('\\/projects\\/\\d+\\/checklist\\/list_templates\\/\\d+') },
+  { method: 'POST', pattern: re('\\/projects\\/\\d+\\/checklist\\/list_templates\\/create_from_company_template') },
+  { method: 'GET', pattern: re('\\/checklist\\/item_types') },
+  { method: 'GET', pattern: re('\\/projects\\/\\d+\\/checklist\\/lists') },
+  { method: 'POST', pattern: re('\\/projects\\/\\d+\\/checklist\\/lists') },
+  { method: 'GET', pattern: re('\\/projects\\/\\d+\\/checklist\\/list_items') },
+  { method: 'GET', pattern: re('\\/projects\\/\\d+\\/checklist\\/list_sections') },
+  { method: 'POST', pattern: re('\\/projects\\/\\d+\\/checklist\\/items\\/\\d+\\/item_response') },
+  { method: 'GET', pattern: re('\\/projects\\/\\d+\\/checklist\\/schedules') },
+  { method: 'POST', pattern: re('\\/projects\\/\\d+\\/checklist\\/schedules') },
+  { method: 'PATCH', pattern: re('\\/projects\\/\\d+\\/checklist\\/schedules\\/\\d+') },
 ];
 
 export function isAllowedRequest(method: string, path: string): boolean {
@@ -285,11 +126,8 @@ export function isAllowedRequest(method: string, path: string): boolean {
 
 // ─── Proyecto: fecha fin ──────────────────────────────────────────────────────
 
-/**
- * TODO(verify): nombre del campo de fecha fin en "Show Project".
- * Se prueban en este orden; el primero con fecha válida gana.
- */
-export const PROJECT_END_DATE_FIELDS = ['completion_date', 'projected_finish_date'] as const;
+/** Campos de fecha fin de [Show project], en orden de preferencia. */
+export const PROJECT_END_DATE_FIELDS = ['completion_date', 'estimated_completion_date'] as const;
 
 export interface ProjectEndDate {
   date: string;
@@ -306,28 +144,9 @@ export function resolveProjectEndDate(project: unknown): ProjectEndDate | null {
   return null;
 }
 
-// ─── Tipos de ítem y respuestas ───────────────────────────────────────────────
+// ─── Payloads ─────────────────────────────────────────────────────────────────
 
-/**
- * TODO(verify) [Checklist Item Types]: cómo se declara que un ítem es de tipo
- * número o texto. Ajustar SOLO esta función.
- */
-export function itemTypeFields(valueType: ValueType): Record<string, unknown> {
-  return valueType === 'number' ? { item_type: 'number' } : { item_type: 'text' };
-}
-
-/**
- * TODO(verify) [Checklist Item Responses]: formato de la respuesta con el valor
- * objetivo. El enunciado sugiere number_value / text_value.
- */
-export function buildItemResponsePayload(valueType: ValueType, value: number | string): Record<string, unknown> {
-  return {
-    item_response: valueType === 'number' ? { number_value: Number(value) } : { text_value: String(value) },
-  };
-}
-
-// ─── Payloads de creación ─────────────────────────────────────────────────────
-
+/** [Create Company Checklist Template] list_template*{name, description, …} */
 export function buildTemplatePayload(name: string = TEMPLATE_NAME): Record<string, unknown> {
   return {
     list_template: {
@@ -337,43 +156,78 @@ export function buildTemplatePayload(name: string = TEMPLATE_NAME): Record<strin
   };
 }
 
+/** [Create Company Checklist Template Section] section*{name, position} */
 export function buildSectionPayload(name: string, position: number): Record<string, unknown> {
   return { section: { name, position } };
 }
 
-export function buildItemPayload(item: Pick<PlannedItem, 'name' | 'valueType'>, position: number): Record<string, unknown> {
-  return { item: { name: item.name, position, ...itemTypeFields(item.valueType) } };
+/**
+ * [Create Company Inspection Template Item]
+ * inspection_template_item*{name, details, optional, position, section_id, type, response_set_id}
+ * `type` se omite si no se pudo determinar (Procore aplica su tipo por defecto).
+ */
+export function buildTemplateItemPayload(
+  item: Pick<PlannedItem, 'name'>,
+  position: number,
+  sectionId: Id,
+  type?: string,
+): Record<string, unknown> {
+  return {
+    inspection_template_item: {
+      name: item.name,
+      position,
+      section_id: Number(sectionId),
+      ...(type ? { type } : {}),
+    },
+  };
 }
 
-/** TODO(verify) [Checklists → Create]: cuerpo para crear la inspección desde una plantilla. */
-export function buildChecklistPayload(args: { projectId: Id; templateId: Id; name?: string }): Record<string, unknown> {
+/** [Create a Project Checklist Template from a Company Checklist Template] source_template_id* */
+export function buildCopyFromCompanyPayload(companyTemplateId: Id): Record<string, unknown> {
+  return { source_template_id: Number(companyTemplateId) };
+}
+
+/**
+ * [Create Checklist (Inspection)] list_template_id*, list*{…}.
+ * `list` no admite nombre: la inspección se llama como la plantilla.
+ */
+export function buildChecklistPayload(args: { templateId: Id; inspectionDate?: string }): Record<string, unknown> {
   return {
-    project_id: Number(args.projectId),
     list_template_id: Number(args.templateId),
-    list: { name: args.name ?? INSPECTION_NAME },
+    list: {
+      description: 'Valores objetivo generados por la app "Objetivos".',
+      ...(args.inspectionDate ? { inspection_date: args.inspectionDate } : {}),
+    },
+  };
+}
+
+/** [Create Checklist Item Response] item_response*{text_value | number_value} */
+export function buildItemResponsePayload(valueType: ValueType, value: number | string): Record<string, unknown> {
+  return {
+    item_response: valueType === 'number' ? { number_value: Number(value) } : { text_value: String(value) },
   };
 }
 
 /**
- * TODO(verify) [Checklist Schedules]: campos de periodicidad. Aquí se modela
- * "trimestral" como repetición mensual cada 3 meses, anclada al día de inicio.
- * Si la API tiene un valor "quarterly" o usa RRULE, cambiar SOLO esta función.
+ * TODO(verify): la referencia no enumera los valores de `frequency`. Se prueban
+ * en orden; un 422 no crea nada y se pasa al siguiente.
  */
-export function quarterlyRecurrenceFields(startDate: string): Record<string, unknown> {
-  const dayOfMonth = Number(startDate.slice(8, 10));
-  return { frequency: 'monthly', interval: 3, day_of_month: dayOfMonth };
-}
+export const QUARTERLY_FREQUENCY_CANDIDATES = ['quarterly', 'every_3_months', 'every_three_months'] as const;
 
 export interface SchedulePayloadArgs {
   templateId: Id;
   startDate: string;
   endDate: string;
+  frequency: string;
   name?: string;
 }
 
 export class SchedulePayloadError extends Error {}
 
-/** TODO(verify) [Checklist Schedules → Create]: nombres de campos del cuerpo. */
+/**
+ * [Create a Checklist (Inspection) Schedule]
+ * schedule*{name, inspection_template_id, first_inspection_due_at, ends_at, frequency, …}
+ */
 export function buildSchedulePayload(args: SchedulePayloadArgs): Record<string, unknown> {
   const start = toIsoDate(args.startDate);
   const end = toIsoDate(args.endDate);
@@ -387,26 +241,51 @@ export function buildSchedulePayload(args: SchedulePayloadArgs): Record<string, 
   return {
     schedule: {
       name: args.name ?? SCHEDULE_NAME,
-      list_template_id: Number(args.templateId),
-      start_date: start,
-      end_date: end,
-      ...quarterlyRecurrenceFields(start),
+      inspection_template_id: Number(args.templateId),
+      first_inspection_due_at: start,
+      ends_at: end,
+      frequency: args.frequency,
     },
   };
 }
 
-/** TODO(verify) [Checklist Schedules → Update]. */
+/** [Update a Checklist (Inspection) Schedule] schedule*{ends_at, …} */
 export function buildScheduleEndDatePatch(endDate: string): Record<string, unknown> {
-  return { schedule: { end_date: endDate } };
+  return { schedule: { ends_at: endDate } };
+}
+
+// ─── Tipos de ítem ────────────────────────────────────────────────────────────
+
+/**
+ * Valores candidatos para `type` a partir de [List Available Checklist Item Types].
+ * TODO(verify): la referencia no detalla el esquema de respuesta; se buscan objetos
+ * cuyo identificador o nombre indique número/texto y se prueban sus valores.
+ */
+export function itemTypeCandidates(itemTypes: unknown, valueType: ValueType): string[] {
+  const match = valueType === 'number' ? /n[uú]mer|numeric|number/i : /text|texto/i;
+  const out: string[] = [];
+  const add = (v: unknown) => {
+    if (typeof v === 'string' && v.trim() && !out.includes(v)) out.push(v);
+  };
+  if (Array.isArray(itemTypes)) {
+    for (const t of itemTypes) {
+      if (typeof t === 'string') {
+        if (match.test(t)) add(t);
+        continue;
+      }
+      if (typeof t !== 'object' || t === null) continue;
+      const o = t as Record<string, unknown>;
+      const labels = ['type', 'key', 'value', 'name', 'label'].map((k) => o[k]).filter((v) => typeof v === 'string');
+      if (!labels.some((l) => match.test(l as string))) continue;
+      for (const k of ['type', 'key', 'value', 'name']) add(o[k]);
+    }
+  }
+  return out;
 }
 
 // ─── Lectura de respuestas ────────────────────────────────────────────────────
 
-/**
- * Id de un objeto devuelto por Procore. TODO(verify): forma de las respuestas de
- * creación. Acepta { id }, { data: { id } } y un objeto envuelto por su tipo,
- * p. ej. { list_template: { id } } o { section: { id } }.
- */
+/** Id de un objeto devuelto por Procore: { id }, { data: { id } } o envuelto por tipo. */
 export function extractId(resp: unknown): string | null {
   const direct = (o: unknown): string | null => {
     if (typeof o !== 'object' || o === null || Array.isArray(o)) return null;
@@ -419,7 +298,6 @@ export function extractId(resp: unknown): string | null {
   const r = resp as Record<string, unknown>;
   const fromData = direct(r.data);
   if (fromData) return fromData;
-  // Un único objeto anidado con id (envoltorio por tipo).
   const nested = Object.values(r).map(direct).filter((x): x is string => x !== null);
   return nested.length === 1 ? nested[0]! : null;
 }
@@ -430,10 +308,20 @@ export function extractName(obj: unknown): string | null {
   return typeof n === 'string' ? n : null;
 }
 
-/** TODO(verify): fecha fin del schedule en la respuesta (List/Show). */
+/** Colección de una respuesta: array directo o { data: [...] }. */
+export function asArray(data: unknown): Record<string, unknown>[] {
+  const arr = Array.isArray(data)
+    ? data
+    : data && typeof data === 'object' && Array.isArray((data as { data?: unknown }).data)
+      ? (data as { data: unknown[] }).data
+      : [];
+  return arr.filter((x): x is Record<string, unknown> => typeof x === 'object' && x !== null);
+}
+
+/** Fecha fin de un schedule ([List/Show Checklist Schedule] → ends_at). */
 export function extractScheduleEndDate(schedule: unknown): string | null {
   if (typeof schedule !== 'object' || schedule === null) return null;
-  return toIsoDate((schedule as Record<string, unknown>).end_date);
+  return toIsoDate((schedule as Record<string, unknown>).ends_at);
 }
 
 export interface ChecklistItemRef {
@@ -443,53 +331,47 @@ export interface ChecklistItemRef {
 }
 
 /**
- * TODO(verify) [Checklists → Show]: se asume { sections: [{ name, items: [{ id, name }] }] }.
- * También acepta { items: [...] } plano por si la API lo devuelve así.
+ * Ítems de una inspección a partir de [List Checklist (Inspections) Items]
+ * (filtrado por list_id) y, si se tienen, sus secciones ([List Checklist (Inspection) Sections]).
  */
-export function extractChecklistItems(list: unknown): ChecklistItemRef[] {
-  if (typeof list !== 'object' || list === null) return [];
-  const l = list as Record<string, unknown>;
-  const out: ChecklistItemRef[] = [];
-  const pushItems = (items: unknown, sectionName: string | null) => {
-    if (!Array.isArray(items)) return;
-    for (const it of items) {
-      const id = extractId(it);
-      const name = extractName(it);
-      if (id && name) out.push({ id, name, sectionName });
-    }
-  };
-  if (Array.isArray(l.sections)) {
-    for (const s of l.sections) {
-      if (typeof s === 'object' && s !== null) {
-        pushItems((s as Record<string, unknown>).items, extractName(s));
-      }
-    }
+export function extractListItems(items: unknown, sections?: unknown): ChecklistItemRef[] {
+  const sectionNames = new Map<string, string>();
+  for (const s of asArray(sections)) {
+    const id = extractId(s);
+    const name = extractName(s);
+    if (id && name) sectionNames.set(id, name);
   }
-  pushItems(l.items, null);
+  const out: ChecklistItemRef[] = [];
+  for (const it of asArray(items)) {
+    const id = extractId(it);
+    const name = extractName(it);
+    if (!id || !name) continue;
+    const sid = it.section_id ?? (it.section as { id?: unknown } | undefined)?.id;
+    const sectionName =
+      typeof sid === 'number' || typeof sid === 'string' ? (sectionNames.get(String(sid)) ?? null) : null;
+    out.push({ id, name, sectionName });
+  }
   return out;
 }
 
 // ─── Enlaces a la web de Procore ──────────────────────────────────────────────
 
-/** VERIFIED: patrón /:project_id/project/checklists/lists/:id (Side Panel View Keys → Inspections). */
+/** Patrón /:project_id/project/checklists/lists/:id (Side Panel View Keys → Inspections). */
 export function checklistWebUrl(webBase: string, projectId: Id, listId: Id): string {
   return `${webBase}/${enc(projectId)}/project/checklists/lists/${enc(listId)}`;
 }
 
-/** TODO(verify): URL de una plantilla de proyecto en la web. */
+/** TODO(verify): URL web de una plantilla de proyecto. */
 export function templateWebUrl(webBase: string, projectId: Id, templateId: Id): string {
   return `${webBase}/${enc(projectId)}/project/checklists/list_templates/${enc(templateId)}`;
 }
 
-/** TODO(verify): URL de las inspecciones planificadas; se enlaza a la herramienta Inspections. */
+/** Herramienta Inspections del proyecto (allí están las planificadas). */
 export function scheduleWebUrl(webBase: string, projectId: Id): string {
   return `${webBase}/${enc(projectId)}/project/checklists`;
 }
 
 // ─── Webhooks ─────────────────────────────────────────────────────────────────
 
-/**
- * TODO(verify): nombre del recurso de webhook cuando cambia un proyecto
- * (Webhook Resources list / CSV). "Projects" es el candidato principal.
- */
+/** TODO(verify): nombre del recurso de webhook cuando cambia un proyecto (Webhook Resources). */
 export const PROJECT_WEBHOOK_RESOURCES = ['Projects', 'Project Dates'] as const;

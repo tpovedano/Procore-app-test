@@ -8,7 +8,7 @@
  */
 import { hasNextPage } from './retry.js';
 import { paths } from './procoreSpec.js';
-import type { Candidate, HttpMethod } from './procoreSpec.js';
+import type { HttpMethod } from './procoreSpec.js';
 
 export type Query = Record<string, string | number>;
 
@@ -79,40 +79,49 @@ async function one<T = ProcoreObject>(transport: Transport, req: ApiRequest): Pr
 
 export function createProcoreClient(rawTransport: Transport) {
   const transport = annotateErrors(rawTransport);
+  const get = (path: string, query?: Query) => one(transport, { method: 'GET', path, query });
+  const post = (path: string, body: unknown, query?: Query) => one(transport, { method: 'POST', path, query, body });
   return {
-    getMe: () => one(transport, { method: 'GET', path: paths.me() }),
+    getMe: () => get(paths.me()),
+    getProject: (companyId: string, projectId: string) => get(paths.showProject(projectId), { company_id: companyId }),
 
-    getProject: (companyId: string, projectId: string) =>
-      one(transport, { method: 'GET', path: paths.showProject(projectId), query: { company_id: companyId } }),
-
-    listProjectTemplates: (projectId: string) => listAll(transport, paths.projectTemplates(projectId)),
-
+    // Plantillas de compañía (secciones e ítems solo se pueden crear aquí).
     listCompanyTemplates: (companyId: string) => listAll(transport, paths.companyTemplates(companyId)),
+    createCompanyTemplate: (companyId: string, payload: unknown) => post(paths.companyTemplates(companyId), payload),
+    deleteCompanyTemplate: (companyId: string, templateId: string) =>
+      transport({ method: 'DELETE', path: paths.companyTemplate(companyId, templateId) }),
+    listCompanyTemplateSections: (companyId: string, templateId: string) =>
+      get(paths.companyTemplateSections(companyId, templateId)),
+    createCompanyTemplateSection: (companyId: string, templateId: string, payload: unknown) =>
+      post(paths.companyTemplateSections(companyId, templateId), payload),
+    listCompanyTemplateItems: (companyId: string, templateId: string) =>
+      listAll(transport, paths.companyTemplateItems(companyId, templateId)),
+    createCompanyTemplateItem: (companyId: string, templateId: string, payload: unknown) =>
+      post(paths.companyTemplateItems(companyId, templateId), payload),
+    listItemTypes: (companyId: string) => get(paths.itemTypes(), { company_id: companyId }),
 
-    createCompanyTemplate: (companyId: string, payload: unknown) =>
-      one(transport, { method: 'POST', path: paths.companyTemplates(companyId), body: payload }),
+    // Plantillas de proyecto.
+    listProjectTemplates: (projectId: string) => listAll(transport, paths.projectTemplates(projectId)),
+    createProjectTemplateFromCompany: (projectId: string, payload: unknown) =>
+      post(paths.projectTemplateFromCompany(projectId), payload),
+    deleteProjectTemplate: (projectId: string, templateId: string) =>
+      transport({ method: 'DELETE', path: paths.projectTemplate(projectId, templateId) }),
 
-    createProjectTemplate: (projectId: string, payload: unknown) =>
-      one(transport, { method: 'POST', path: paths.projectTemplates(projectId), body: payload }),
+    // Inspecciones.
+    listChecklists: (projectId: string) => listAll(transport, paths.projectLists(projectId)),
+    createChecklist: (projectId: string, payload: unknown) => post(paths.projectLists(projectId), payload),
+    listChecklistItems: (projectId: string, listId: string) =>
+      listAll(transport, paths.listItems(projectId), { 'filters[list_id]': listId }),
+    listChecklistSections: (projectId: string, listId: string) =>
+      listAll(transport, paths.listSections(projectId), { 'filters[list_id]': listId }),
+    createItemResponse: (projectId: string, itemId: string, payload: unknown) =>
+      post(paths.itemResponse(projectId, itemId), payload),
 
-    listChecklists: (projectId: string) => listAll(transport, paths.checklists(), { project_id: projectId }),
-
-    createChecklist: (projectId: string, payload: unknown) =>
-      one(transport, { method: 'POST', path: paths.checklists(), query: { project_id: projectId }, body: payload }),
-
+    // Planificadas.
     listSchedules: (projectId: string) => listAll(transport, paths.schedules(projectId)),
-
-    createSchedule: (projectId: string, payload: unknown) =>
-      one(transport, { method: 'POST', path: paths.schedules(projectId), body: payload }),
-
+    createSchedule: (projectId: string, payload: unknown) => post(paths.schedules(projectId), payload),
     updateSchedule: (projectId: string, scheduleId: string, payload: unknown) =>
       one(transport, { method: 'PATCH', path: paths.schedule(projectId, scheduleId), body: payload }),
-
-    // Peticiones sobre rutas candidatas (procoreSpec.CANDIDATES). El proxy solo
-    // deja pasar las que están en su allowlist.
-    getAt: (c: Candidate) => transport({ method: 'GET', path: c.path, query: c.query }),
-    postAt: (c: Candidate, body: unknown) => one(transport, { method: 'POST', path: c.path, query: c.query, body }),
-    deleteAt: (c: Candidate) => transport({ method: 'DELETE', path: c.path, query: c.query }),
   };
 }
 

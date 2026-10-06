@@ -78,7 +78,8 @@ export function DiagnosticsPanel({ client, companyId, projectId }: Props) {
               >
                 {e.status ?? 'ERR'}
               </span>
-              <span className="text-slate-500">{e.label}:</span> {e.path}
+              <span className="text-slate-500">{e.label}</span>
+              {e.error && <span className="text-red-700"> — {e.error}</span>}
             </li>
           ))}
         </ul>

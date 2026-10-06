@@ -1,34 +1,23 @@
 /**
- * Diagnóstico de API (solo lectura). Hace únicamente peticiones GET para saber
- * qué rutas de Inspections existen en la cuenta y con qué forma responden.
- * El informe resultante sirve para fijar rutas y campos en procoreSpec.ts.
+ * Diagnóstico de API (solo lectura). Hace únicamente peticiones GET a endpoints
+ * de la referencia de Procore para comprobar permisos y ver la forma real de las
+ * respuestas (útil para los puntos TODO(verify) de procoreSpec.ts: tipos de ítem
+ * y frecuencias de las planificadas).
  */
 import { truncateForLog } from './apiLog.js';
-import type { ProcoreClient } from './procore.js';
-import { ProcoreApiError } from './procore.js';
-import { CANDIDATES, extractId, type Candidate } from './procoreSpec.js';
+import { ProcoreApiError, type ProcoreClient } from './procore.js';
+import { asArray, extractId } from './procoreSpec.js';
 
 export interface DiagnosticEntry {
   label: string;
-  path: string;
-  query?: Record<string, string | number>;
   status: number | null;
   sample?: unknown;
+  error?: string;
 }
 
 function firstOf(data: unknown): unknown {
-  if (Array.isArray(data)) return data[0];
-  if (data && typeof data === 'object' && Array.isArray((data as { data?: unknown }).data)) {
-    return (data as { data: unknown[] }).data[0];
-  }
-  return data;
-}
-
-/** Primera sección / ítem de un objeto que los traiga anidados. */
-function nested(obj: unknown, key: 'sections' | 'items'): unknown[] {
-  if (!obj || typeof obj !== 'object') return [];
-  const v = (obj as Record<string, unknown>)[key];
-  return Array.isArray(v) ? v : [];
+  const arr = asArray(data);
+  return arr.length ? arr[0] : data;
 }
 
 export async function runDiagnostics(
@@ -39,80 +28,41 @@ export async function runDiagnostics(
 ): Promise<DiagnosticEntry[]> {
   const out: DiagnosticEntry[] = [];
 
-  const get = async (label: string, c: Candidate): Promise<unknown | undefined> => {
-    let status: number | null = null;
-    let data: unknown;
+  const run = async <T,>(label: string, fn: () => Promise<T>, whole = false): Promise<T | undefined> => {
+    let entry: DiagnosticEntry;
+    let data: T | undefined;
     try {
-      const r = await client.getAt(c);
-      status = r.status;
-      data = r.data;
+      data = await fn();
+      entry = { label, status: 200, sample: truncateForLog(whole ? data : firstOf(data)) };
     } catch (e) {
-      status = e instanceof ProcoreApiError ? e.status : null;
       if (e instanceof ProcoreApiError && e.status === 401) throw e;
+      entry = {
+        label,
+        status: e instanceof ProcoreApiError ? e.status : null,
+        error: e instanceof Error ? e.message.slice(0, 200) : String(e),
+      };
     }
-    const entry: DiagnosticEntry = { label, path: c.path, query: c.query, status, sample: truncateForLog(firstOf(data)) };
     out.push(entry);
     onEntry?.(entry);
-    return status !== null && status >= 200 && status < 300 ? data : undefined;
+    return data;
   };
 
-  const pid = projectId;
-  const cid = companyId;
-
-  // 1) Plantillas de proyecto y de compañía.
-  const projectTemplates = await get('Plantillas de proyecto', {
-    path: `/rest/v1.0/projects/${pid}/checklist/list_templates`,
-    query: { per_page: 5 },
-  });
-  const companyTemplates = await get('Plantillas de compañía', {
-    path: `/rest/v1.0/companies/${cid}/checklist/list_templates`,
-    query: { per_page: 5 },
-  });
-
-  // 2) Detalle y secciones de una plantilla de proyecto y de una de compañía.
-  for (const [kind, list] of [
-    ['proyecto', projectTemplates],
-    ['compañía', companyTemplates],
-  ] as const) {
-    const tid = extractId(firstOf(list));
-    if (!tid) continue;
-    const showPath =
-      kind === 'proyecto'
-        ? `/rest/v1.0/projects/${pid}/checklist/list_templates/${tid}`
-        : `/rest/v1.0/companies/${cid}/checklist/list_templates/${tid}`;
-    const shown = await get(`Detalle de plantilla de ${kind}`, { path: showPath });
-    let sectionId = extractId(nested(shown, 'sections')[0]);
-    let sectionsRoot: Candidate | null = null;
-    for (const c of CANDIDATES.templateSections(cid, pid, tid)) {
-      const data = await get(`Secciones de plantilla de ${kind}`, c);
-      if (data !== undefined && !sectionsRoot) {
-        sectionsRoot = c;
-        sectionId ??= extractId(firstOf(data));
-      }
-    }
-    if (sectionsRoot && sectionId) {
-      await get(`Ítems de sección de plantilla de ${kind} (ruta anidada)`, { path: `${sectionsRoot.path}/${sectionId}/items` });
-    }
-    if (kind === 'compañía') {
-      for (const c of CANDIDATES.templateItems(cid, tid)) await get('Ítems de plantilla de compañía', c);
-    }
+  await run('Proyecto (Show project)', () => client.getProject(companyId, projectId));
+  await run('Tipos de ítem (List Available Checklist Item Types)', () => client.listItemTypes(companyId), true);
+  const companyTemplates = await run('Plantillas de compañía', () => client.listCompanyTemplates(companyId));
+  const ctid = extractId(firstOf(companyTemplates));
+  if (ctid) {
+    await run('Secciones de plantilla de compañía', () => client.listCompanyTemplateSections(companyId, ctid));
+    await run('Ítems de plantilla de compañía', () => client.listCompanyTemplateItems(companyId, ctid));
   }
-
-  // 3) Inspecciones: listado, detalle e ítems.
-  const lists = await get('Inspecciones del proyecto', {
-    path: '/rest/v1.0/checklist/lists',
-    query: { project_id: pid, per_page: 5 },
-  });
+  await run('Plantillas de proyecto', () => client.listProjectTemplates(projectId));
+  const lists = await run('Inspecciones del proyecto', () => client.listChecklists(projectId));
   const lid = extractId(firstOf(lists));
   if (lid) {
-    for (const c of CANDIDATES.checklistShow(pid, lid)) await get('Detalle de inspección', c);
-    for (const c of CANDIDATES.checklistItems(pid, lid)) await get('Ítems de inspección', c);
+    await run('Ítems de inspección', () => client.listChecklistItems(projectId, lid));
+    await run('Secciones de inspección', () => client.listChecklistSections(projectId, lid));
   }
-
-  // 4) Planificadas y posibles catálogos de tipos de respuesta.
-  await get('Inspecciones planificadas', { path: `/rest/v1.0/projects/${pid}/checklist/schedules`, query: { per_page: 5 } });
-  await get('Tipos de ítem (candidata)', { path: `/rest/v1.0/companies/${cid}/checklist/item_types` });
-  await get('Conjuntos de respuesta (candidata)', { path: `/rest/v1.0/companies/${cid}/checklist/response_sets` });
-
+  // Ejemplo real de planificada: muestra el formato de `frequency` que usa la cuenta.
+  await run('Inspecciones planificadas (frequency)', () => client.listSchedules(projectId));
   return out;
 }

@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { createDryRunTransport, type DryRunEntry } from '../src/lib/dryRun';
-import { ProcoreApiError, createProcoreClient, type ApiRequest, type Transport } from '../src/lib/procore';
+import { ProcoreApiError, createProcoreClient, type ApiRequest, type ApiResponse, type Transport } from '../src/lib/procore';
 import { INSPECTION_NAME, SCHEDULE_NAME, TEMPLATE_NAME } from '../src/lib/procoreSpec';
 import { buildPlan, type PlannedSection } from '../src/lib/selection';
 import { PreconditionError, execute, hasExisting, prepare } from '../src/lib/workflow';
 import { catalog } from './fixtures';
 
-const TODAY = '2026-10-01';
+const TODAY = '2026-10-06';
 const WEB = 'https://app.procore.com';
+const noSleep = async () => {};
 
 function plan(sel: Record<string, string>): PlannedSection[] {
   const p = buildPlan(catalog, sel);
@@ -21,37 +22,65 @@ function dry(project?: Record<string, unknown>) {
   return { client, log };
 }
 
-describe('flujo completo (dry-run)', () => {
-  it('crea plantilla, secciones por dominio, ítems, inspección, respuestas y planificada', async () => {
+const preparedFresh = { projectName: 'P', endDate: '2027-12-31', endDateField: 'completion_date', existing: {} };
+
+describe('flujo completo (dry-run, endpoints de la referencia)', () => {
+  it('plantilla de compañía → secciones → ítems → copia a proyecto → inspección → valores → planificada', async () => {
     const { client, log } = dry({ id: 1, name: 'P', completion_date: '2027-12-31' });
     const prepared = await prepare(client, '10', '20', TODAY);
     expect(prepared.endDate).toBe('2027-12-31');
     expect(hasExisting(prepared.existing)).toBe(false);
 
     const sections = plan({ inc: '2', prot: 'Vigente', agua: '150' });
-    const result = await execute({ companyId: '10', client, projectId: '20', sections, prepared, reuseExisting: false, webBase: WEB, today: TODAY });
+    const result = await execute({ client, companyId: '10', projectId: '20', sections, prepared, reuseExisting: false, webBase: WEB, today: TODAY, sleep: noSleep });
     expect(result.ok).toBe(true);
     expect(result.steps.map((s) => s.status)).toEqual(['done', 'done', 'done', 'done']);
 
+    const writes = log.filter((e) => e.method !== 'GET').map((e) => `${e.method} ${e.path.replace(/\d{6,}/g, ':id')}`);
+    expect(writes).toEqual([
+      'POST /rest/v1.0/companies/10/checklist/list_templates',
+      'POST /rest/v1.0/companies/10/checklist/list_templates/:id/sections',
+      'POST /rest/v1.0/companies/10/inspection_templates/:id/items',
+      'POST /rest/v1.0/companies/10/inspection_templates/:id/items',
+      'POST /rest/v1.0/companies/10/checklist/list_templates/:id/sections',
+      'POST /rest/v1.0/companies/10/inspection_templates/:id/items',
+      'POST /rest/v1.0/projects/20/checklist/list_templates/create_from_company_template',
+      'DELETE /rest/v1.0/companies/10/checklist/list_templates/:id',
+      'POST /rest/v1.0/projects/20/checklist/lists',
+      'POST /rest/v1.0/projects/20/checklist/items/:id/item_response',
+      'POST /rest/v1.0/projects/20/checklist/items/:id/item_response',
+      'POST /rest/v1.0/projects/20/checklist/items/:id/item_response',
+      'POST /rest/v1.0/projects/20/checklist/schedules',
+    ]);
+
     const posts = log.filter((e) => e.method === 'POST');
-    const sectionPosts = posts.filter((e) => e.path.endsWith('/sections'));
-    // Secciones e ítems con endpoints de compañía sobre la plantilla de proyecto.
-    expect(sectionPosts.every((e) => /^\/rest\/v1\.0\/companies\/10\/checklist\/list_templates\/\d+\/sections$/.test(e.path))).toBe(true);
-    expect(sectionPosts.map((e) => (e.body as any).section.name)).toEqual(['Seguridad', 'Medio ambiente']);
-    const itemPosts = posts.filter((e) => e.path.endsWith('/items'));
-    // Ítems: "Create Company Inspection Template Item", con la sección en el cuerpo.
-    expect(itemPosts.every((e) => /^\/rest\/v1\.0\/companies\/10\/inspection_templates\/\d+\/items$/.test(e.path))).toBe(true);
-    expect(itemPosts.map((e) => typeof (e.body as any).item.section_id)).toEqual(['number', 'number', 'number']);
-    expect(itemPosts.map((e) => (e.body as any).item.name)).toEqual(['Incidentes (uds)', 'Protocolo', 'Consumo de agua (m³)']);
-    const responses = posts.filter((e) => e.path.endsWith('/item_responses')).map((e) => e.body);
+    expect(posts.filter((e) => e.path.endsWith('/sections')).map((e) => (e.body as any).section.name)).toEqual([
+      'Seguridad',
+      'Medio ambiente',
+    ]);
+    const items = posts.filter((e) => e.path.endsWith('/items')).map((e) => (e.body as any).inspection_template_item);
+    expect(items.map((i) => [i.name, i.type])).toEqual([
+      ['Incidentes (uds)', 'number'],
+      ['Protocolo', 'text'],
+      ['Consumo de agua (m³)', 'number'],
+    ]);
+    expect(items.every((i) => typeof i.section_id === 'number')).toBe(true);
+
+    const copy = posts.find((e) => e.path.endsWith('/create_from_company_template'))!;
+    const companyTemplateId = (copy.body as any).source_template_id;
+    expect(log.find((e) => e.method === 'DELETE')!.path).toBe(`/rest/v1.0/companies/10/checklist/list_templates/${companyTemplateId}`);
+
+    const responses = posts.filter((e) => e.path.endsWith('/item_response')).map((e) => e.body);
     expect(responses).toEqual([
       { item_response: { number_value: 2 } },
       { item_response: { text_value: 'Vigente' } },
       { item_response: { number_value: 150 } },
     ]);
-    const schedule = posts.find((e) => e.path.endsWith('/checklist/schedules'))!.body as any;
-    expect(schedule.schedule.end_date).toBe('2027-12-31');
-    expect(schedule.schedule.start_date).toBe(TODAY);
+    const schedule = (posts.find((e) => e.path.endsWith('/checklist/schedules'))!.body as any).schedule;
+    expect(schedule).toMatchObject({ name: SCHEDULE_NAME, first_inspection_due_at: TODAY, ends_at: '2027-12-31', frequency: 'quarterly' });
+    const createList = posts.find((e) => e.path === '/rest/v1.0/projects/20/checklist/lists')!.body as any;
+    expect(schedule.inspection_template_id).toBe(createList.list_template_id);
+
     const inspection = result.steps.find((s) => s.id === 'inspection')!;
     expect(inspection.url).toMatch(/^https:\/\/app\.procore\.com\/20\/project\/checklists\/lists\/\d+$/);
   });
@@ -62,21 +91,26 @@ describe('flujo completo (dry-run)', () => {
     expect(log.some((e) => e.method !== 'GET')).toBe(false);
   });
 
+  it('usa estimated_completion_date si no hay completion_date', async () => {
+    const { client } = dry({ id: 1, completion_date: null, estimated_completion_date: '2027-06-30' });
+    expect((await prepare(client, '10', '20', TODAY)).endDate).toBe('2027-06-30');
+  });
+
   it('fecha fin ya pasada → error y no se crea nada', async () => {
     const { client } = dry({ id: 1, completion_date: '2025-01-01' });
     await expect(prepare(client, '10', '20', TODAY)).rejects.toThrow(/ya pasó/);
   });
 });
 
-/** Transporte falso configurable para duplicados, paginación y fallos. */
-function fakeTransport(handlers: (req: ApiRequest) => unknown | undefined): { t: Transport; calls: ApiRequest[] } {
+/** Transporte falso configurable: `handler` devuelve una respuesta, un error o undefined (comportamiento por defecto). */
+function fakeTransport(handler: (req: ApiRequest) => ApiResponse | Error | undefined): { t: Transport; calls: ApiRequest[] } {
   const calls: ApiRequest[] = [];
   let id = 100;
   const t: Transport = async (req) => {
     calls.push(req);
-    const r = handlers(req);
+    const r = handler(req);
     if (r instanceof Error) throw r;
-    if (r !== undefined) return r as any;
+    if (r !== undefined) return r;
     if (req.method === 'GET') return { status: 200, data: [], link: null };
     return { status: 201, data: { id: id++ }, link: null };
   };
@@ -84,12 +118,11 @@ function fakeTransport(handlers: (req: ApiRequest) => unknown | undefined): { t:
 }
 
 describe('duplicados y paginación', () => {
-  it('detecta objetos existentes por nombre recorriendo todas las páginas', async () => {
+  it('detecta plantilla (proyecto y compañía), inspección y planificada por nombre, recorriendo páginas', async () => {
     const { t, calls } = fakeTransport((req) => {
       if (req.path.endsWith('/projects/20')) return { status: 200, data: { completion_date: '2027-06-30' } };
-      if (req.path.endsWith('/list_templates')) {
-        const page = req.query?.page;
-        if (page === 1) {
+      if (req.path === '/rest/v1.0/projects/20/checklist/list_templates') {
+        if (req.query?.page === 1) {
           return {
             status: 200,
             data: Array.from({ length: 100 }, (_, i) => ({ id: i + 1, name: `Otra ${i}` })),
@@ -98,24 +131,27 @@ describe('duplicados y paginación', () => {
         }
         return { status: 200, data: [{ id: 555, name: TEMPLATE_NAME }], link: '<x?page=1>; rel="first"' };
       }
-      if (req.path.endsWith('/checklist/lists')) return { status: 200, data: [{ id: 7, name: INSPECTION_NAME.toUpperCase() }] };
-      if (req.path.endsWith('/schedules')) return { status: 200, data: [{ id: 9, name: SCHEDULE_NAME, end_date: '2027-01-01' }] };
+      if (req.path === '/rest/v1.0/companies/10/checklist/list_templates') return { status: 200, data: [{ id: 66, name: TEMPLATE_NAME }] };
+      if (req.path === '/rest/v1.0/projects/20/checklist/lists') return { status: 200, data: [{ id: 7, name: INSPECTION_NAME.toUpperCase() }] };
+      if (req.path.endsWith('/schedules')) return { status: 200, data: [{ id: 9, name: SCHEDULE_NAME, ends_at: '2027-01-01' }] };
       return undefined;
     });
     const prepared = await prepare(createProcoreClient(t), '10', '20', TODAY);
     expect(prepared.existing).toEqual({
       template: { id: '555', name: TEMPLATE_NAME },
+      companyTemplate: { id: '66', name: TEMPLATE_NAME },
       inspection: { id: '7', name: INSPECTION_NAME.toUpperCase() },
       schedule: { id: '9', name: SCHEDULE_NAME, endDate: '2027-01-01' },
     });
-    expect(calls.filter((c) => c.path.endsWith('/list_templates')).length).toBe(2);
+    expect(calls.filter((c) => c.path === '/rest/v1.0/projects/20/checklist/list_templates').length).toBe(2);
   });
 
-  it('reutilizar: no crea plantilla/inspección/planificada; actualiza valores y fecha fin', async () => {
+  it('reutilizar: no crea plantilla/inspección/planificada; actualiza valores y fecha fin (ends_at)', async () => {
     const { t, calls } = fakeTransport((req) => {
-      if (req.method === 'GET' && req.path === '/rest/v1.0/checklist/lists/7') {
-        return { status: 200, data: { sections: [{ name: 'Seguridad', items: [{ id: 71, name: 'Incidentes (uds)' }] }] } };
+      if (req.method === 'GET' && req.path.endsWith('/checklist/list_items')) {
+        return { status: 200, data: [{ id: 71, name: 'Incidentes (uds)', section_id: 1 }] };
       }
+      if (req.method === 'GET' && req.path.endsWith('/checklist/list_sections')) return { status: 200, data: [{ id: 1, name: 'Seguridad' }] };
       return undefined;
     });
     const result = await execute({
@@ -124,9 +160,8 @@ describe('duplicados y paginación', () => {
       projectId: '20',
       sections: plan({ inc: '4', prot: 'Sí' }),
       prepared: {
-        projectName: 'P',
+        ...preparedFresh,
         endDate: '2027-06-30',
-        endDateField: 'completion_date',
         existing: {
           template: { id: '555', name: TEMPLATE_NAME },
           inspection: { id: '7', name: INSPECTION_NAME },
@@ -136,46 +171,89 @@ describe('duplicados y paginación', () => {
       reuseExisting: true,
       webBase: WEB,
       today: TODAY,
+      sleep: noSleep,
     });
     expect(result.ok).toBe(true);
     expect(result.steps.map((s) => s.status)).toEqual(['reused', 'reused', 'warning', 'reused']);
     const writes = calls.filter((c) => c.method !== 'GET');
     expect(writes.map((c) => `${c.method} ${c.path}`)).toEqual([
-      'POST /rest/v1.0/checklist/lists/7/items/71/item_responses',
+      'POST /rest/v1.0/projects/20/checklist/items/71/item_response',
       'PATCH /rest/v1.0/projects/20/checklist/schedules/9',
     ]);
-    expect(writes[1]!.body).toEqual({ schedule: { end_date: '2027-06-30' } });
+    expect(writes[1]!.body).toEqual({ schedule: { ends_at: '2027-06-30' } });
+    expect(calls.find((c) => c.path.endsWith('/list_items'))!.query).toMatchObject({ 'filters[list_id]': '7' });
   });
 });
 
-describe('errores parciales', () => {
-  it('si falla la planificada, informa qué se creó y qué no', async () => {
+describe('variantes no documentadas (type del ítem y frequency)', () => {
+  it('si Procore rechaza el type, crea el ítem sin type y lo avisa; prueba frecuencias hasta que una vale', async () => {
     const { client } = dry({ id: 1, completion_date: '2027-12-31' });
     const prepared = await prepare(client, '10', '20', TODAY);
-    const failing = createProcoreClient(async () => {
-      throw new ProcoreApiError('boom', 500);
-    });
+    const calls: ApiRequest[] = [];
+    const base = createDryRunTransport({ today: TODAY });
+    const t: Transport = async (req) => {
+      calls.push(req);
+      const b = req.body as any;
+      if (req.method === 'POST' && req.path.endsWith('/items') && b.inspection_template_item.type) {
+        throw new ProcoreApiError('type is not included in the list', 422);
+      }
+      if (req.method === 'POST' && req.path.endsWith('/checklist/schedules') && b.schedule.frequency !== 'every_3_months') {
+        throw new ProcoreApiError('frequency is not included in the list', 422);
+      }
+      return base(req);
+    };
     const result = await execute({
+      client: createProcoreClient(t),
       companyId: '10',
-      client: { ...client, createSchedule: failing.createSchedule },
       projectId: '20',
-      sections: plan({ inc: '1' }),
+      sections: plan({ inc: '1', form: '2' }),
       prepared,
       reuseExisting: false,
       webBase: WEB,
       today: TODAY,
+      sleep: noSleep,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.steps[0]).toMatchObject({ status: 'warning' });
+    expect(result.steps[0]!.detail).toMatch(/2 ítems con el tipo por defecto/);
+    // 1.er ítem: prueba los valores del listado de tipos ("number", "Número") y luego sin type;
+    // el 2.º (mismo tipo de valor) va directo sin type: se reutiliza lo aprendido.
+    const itemPosts = calls.filter((c) => c.method === 'POST' && c.path.endsWith('/items'));
+    expect(itemPosts.map((c) => (c.body as any).inspection_template_item.type ?? null)).toEqual(['number', 'Número', null, null]);
+    const freqs = calls
+      .filter((c) => c.method === 'POST' && c.path.endsWith('/checklist/schedules'))
+      .map((c) => (c.body as any).schedule.frequency);
+    expect(freqs).toEqual(['quarterly', 'every_3_months']);
+  });
+});
+
+describe('errores parciales y limpieza', () => {
+  it('si falla la planificada, informa qué se creó y qué no', async () => {
+    const base = createDryRunTransport({ today: TODAY });
+    const t: Transport = async (req) => {
+      if (req.method === 'POST' && req.path.endsWith('/checklist/schedules')) throw new ProcoreApiError('boom', 500);
+      return base(req);
+    };
+    const result = await execute({
+      client: createProcoreClient(t),
+      companyId: '10',
+      projectId: '20',
+      sections: plan({ inc: '1' }),
+      prepared: preparedFresh,
+      reuseExisting: false,
+      webBase: WEB,
+      today: TODAY,
+      sleep: noSleep,
     });
     expect(result.ok).toBe(false);
     expect(result.steps.map((s) => s.status)).toEqual(['done', 'done', 'done', 'failed']);
-    expect(result.summary.join(' ')).toMatch(/Plantilla de compañía creada/);
+    expect(result.summary.join(' ')).toMatch(/Plantilla creada/);
     expect(result.summary.join(' ')).toMatch(/Falló el paso "Inspección planificada trimestral"/);
   });
 
-  it('si falla un ítem de la plantilla, no se crea la inspección ni la planificada y se borra la plantilla', async () => {
+  it('si falla un ítem, no se copia al proyecto ni se crea la inspección, y se borra la plantilla de compañía', async () => {
     const { t, calls } = fakeTransport((req) => {
-      // Procore rechaza siempre el 2.º ítem, con cualquier variante de cuerpo.
-      const body = JSON.stringify(req.body ?? {});
-      if (req.method === 'POST' && req.path.endsWith('/items') && body.includes('Horas de formación')) {
+      if (req.method === 'POST' && req.path.endsWith('/items') && JSON.stringify(req.body).includes('Horas de formación')) {
         return new ProcoreApiError('Item inválido', 422);
       }
       return undefined;
@@ -185,19 +263,36 @@ describe('errores parciales', () => {
       client: createProcoreClient(t),
       projectId: '20',
       sections: plan({ inc: '1', form: '2', prot: 'x' }),
-      prepared: { projectName: 'P', endDate: '2027-12-31', endDateField: 'completion_date', existing: {} },
+      prepared: preparedFresh,
       reuseExisting: false,
       webBase: WEB,
       today: TODAY,
-      sleep: async () => {},
+      sleep: noSleep,
     });
     expect(result.steps.map((s) => s.status)).toEqual(['failed', 'skipped', 'skipped', 'skipped']);
     expect(result.summary[0]).toMatch(/quedó incompleta y se eliminó automáticamente/);
     expect(result.steps[0]!.detail).toMatch(/rechazó los datos/);
-    // Se probaron las 4 variantes de cuerpo del ítem antes de rendirse, y se borró la plantilla.
-    const failedItemPosts = calls.filter((c) => c.method === 'POST' && JSON.stringify(c.body).includes('Horas de formación'));
-    expect(failedItemPosts).toHaveLength(4);
     expect(calls.some((c) => c.method === 'DELETE' && /\/companies\/10\/checklist\/list_templates\/\d+$/.test(c.path))).toBe(true);
-    expect(calls.some((c) => c.path.endsWith('/checklist/lists') && c.method === 'POST')).toBe(false);
+    expect(calls.some((c) => c.path.endsWith('/create_from_company_template'))).toBe(false);
+    expect(calls.some((c) => c.method === 'POST' && c.path.endsWith('/checklist/lists'))).toBe(false);
+  });
+
+  it('si las secciones no aparecen al releer la plantilla de compañía, se detiene antes de copiarla', async () => {
+    const { t, calls } = fakeTransport(() => undefined); // acepta los POST, pero los GET devuelven []
+    const result = await execute({
+      companyId: '10',
+      client: createProcoreClient(t),
+      projectId: '20',
+      sections: plan({ inc: '1', agua: '2' }),
+      prepared: preparedFresh,
+      reuseExisting: false,
+      webBase: WEB,
+      today: TODAY,
+      sleep: noSleep,
+    });
+    expect(result.steps.map((s) => s.status)).toEqual(['failed', 'skipped', 'skipped', 'skipped']);
+    expect(result.steps[0]!.detail).toMatch(/no quedó completa: faltan las secciones Seguridad, Medio ambiente/);
+    expect(calls.some((c) => c.path.endsWith('/create_from_company_template'))).toBe(false);
+    expect(calls.some((c) => c.method === 'DELETE')).toBe(true);
   });
 });
