@@ -559,12 +559,23 @@ export async function execute(input: ExecuteInput): Promise<ExecuteResult> {
     } else {
       // Primera medición trimestral a los 3 meses del reporte de hoy (o en la fecha fin si es antes).
       const firstDue = [addMonthsIso(today, 3), prepared.endDate].sort()[0]!;
-      const created = await retry(() =>
-        client.createSchedule(
-          projectId,
-          buildSchedulePayload({ templateId, firstDueDate: firstDue, endDate: prepared.endDate }),
-        ),
-      );
+      let created: unknown;
+      try {
+        created = await retry(() =>
+          client.createSchedule(
+            projectId,
+            buildSchedulePayload({ templateId, firstDueDate: firstDue, endDate: prepared.endDate }),
+          ),
+        );
+      } catch (e) {
+        // Ante un error interno de Procore (5xx), la planificada puede haberse creado igualmente:
+        // se comprueba por nombre antes de dar el paso por fallido (evita duplicados al reintentar).
+        if (!(e instanceof ProcoreApiError && e.status >= 500)) throw e;
+        await sleep(PROPAGATION_DELAYS_MS[0]!);
+        const found = findByName(await client.listSchedules(projectId), SCHEDULE_NAME);
+        if (!found) throw e;
+        created = { id: found.id };
+      }
       const sid = extractId(created);
       update('schedule', {
         status: 'done',

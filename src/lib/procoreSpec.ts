@@ -256,6 +256,9 @@ export function buildSchedulePayload(args: SchedulePayloadArgs): Record<string, 
       first_inspection_due_at: toScheduleTimestamp(first),
       ends_at: toScheduleTimestamp(end),
       frequency: SCHEDULE_FREQUENCY,
+      // Listas opcionales de la referencia; se envían vacías explícitamente (sin ellas Procore respondió 500).
+      assignee_ids: [],
+      distribution_member_ids: [],
     },
   };
 }

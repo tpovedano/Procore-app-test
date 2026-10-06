@@ -268,6 +268,54 @@ describe('errores parciales y limpieza', () => {
     expect(result.summary.join(' ')).toMatch(/Falló el paso "Inspección planificada trimestral"/);
   });
 
+  it('si Procore da 500 al crear la planificada pero la creó igualmente, no la duplica y continúa', async () => {
+    const base = createDryRunTransport({ today: TODAY });
+    const calls: ApiRequest[] = [];
+    const t: Transport = async (req) => {
+      calls.push(req);
+      if (req.method === 'POST' && req.path.endsWith('/checklist/schedules')) throw new ProcoreApiError('Internal Server Error', 500);
+      if (req.method === 'GET' && req.path.endsWith('/checklist/schedules')) {
+        return { status: 200, data: [{ id: 77, name: SCHEDULE_NAME }], link: null };
+      }
+      return base(req);
+    };
+    const result = await execute({
+      client: createProcoreClient(t),
+      companyId: '10',
+      projectId: '20',
+      sections: plan({ inc: '1' }),
+      prepared: preparedFresh,
+      reuseExisting: false,
+      webBase: WEB,
+      today: TODAY,
+      sleep: noSleep,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.summary.join(' ')).toMatch(/Planificación trimestral creada \(id 77\)/);
+    expect(calls.filter((c) => c.method === 'POST' && c.path.endsWith('/checklist/schedules'))).toHaveLength(1);
+  });
+
+  it('si Procore da 500 y la planificada no existe, informa del error', async () => {
+    const base = createDryRunTransport({ today: TODAY });
+    const t: Transport = async (req) => {
+      if (req.method === 'POST' && req.path.endsWith('/checklist/schedules')) throw new ProcoreApiError('Internal Server Error', 500);
+      return base(req);
+    };
+    const result = await execute({
+      client: createProcoreClient(t),
+      companyId: '10',
+      projectId: '20',
+      sections: plan({ inc: '1' }),
+      prepared: preparedFresh,
+      reuseExisting: false,
+      webBase: WEB,
+      today: TODAY,
+      sleep: noSleep,
+    });
+    expect(result.steps.at(-1)).toMatchObject({ status: 'failed' });
+    expect(result.steps.at(-1)!.detail).toMatch(/\(500\)/);
+  });
+
   it('si falla un ítem, no se copia al proyecto ni se crea la inspección, y se borra la plantilla de compañía', async () => {
     const { t, calls } = fakeTransport((req) => {
       if (req.method === 'POST' && req.path.endsWith('/items') && JSON.stringify(req.body).includes('Horas de formación')) {

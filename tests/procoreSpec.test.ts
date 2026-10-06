@@ -86,6 +86,8 @@ describe('payload del schedule (planificada trimestral)', () => {
         first_inspection_due_at: '2027-01-06T12:00:00Z',
         ends_at: '2027-12-31T12:00:00Z',
         frequency: 'quarterly',
+        assignee_ids: [],
+        distribution_member_ids: [],
       },
     });
   });
