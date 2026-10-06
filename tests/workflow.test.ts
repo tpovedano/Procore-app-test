@@ -83,7 +83,7 @@ describe('flujo completo (dry-run, endpoints de la referencia)', () => {
       private: false,
       days_created_before_due_date: 7,
       first_inspection_due_at: '2027-01-06T12:00:00Z',
-      ends_at: '2027-12-31',
+      ends_at: '2027-12-31T12:00:00Z',
       frequency: 'quarterly',
     });
     const createList = posts.find((e) => e.path === '/rest/v1.0/projects/20/checklist/lists')!.body as any;
@@ -188,7 +188,7 @@ describe('duplicados y paginación', () => {
       'POST /rest/v1.0/projects/20/checklist/items/71/item_response',
       'PATCH /rest/v1.0/projects/20/checklist/schedules/9',
     ]);
-    expect(writes[1]!.body).toEqual({ schedule: { ends_at: '2027-06-30' } });
+    expect(writes[1]!.body).toEqual({ schedule: { ends_at: '2027-06-30T12:00:00Z' } });
     expect(calls.find((c) => c.path.endsWith('/list_items'))!.query).toMatchObject({ 'filters[list_id]': '7' });
   });
 });

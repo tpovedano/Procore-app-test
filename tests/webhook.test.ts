@@ -40,7 +40,7 @@ describe('webhook', () => {
     });
     const r = await syncScheduleEndDate(client, '5', '6');
     expect(r).toEqual({ action: 'updated', scheduleId: '3', from: '2027-12-31', to: '2028-03-31' });
-    expect(calls.at(-1)).toMatchObject({ method: 'PATCH', path: '/rest/v1.0/projects/6/checklist/schedules/3', body: { schedule: { ends_at: '2028-03-31' } } });
+    expect(calls.at(-1)).toMatchObject({ method: 'PATCH', path: '/rest/v1.0/projects/6/checklist/schedules/3', body: { schedule: { ends_at: '2028-03-31T12:00:00Z' } } });
   });
 
   it('no hace nada si no hay planificada de la app', async () => {

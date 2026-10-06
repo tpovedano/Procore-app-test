@@ -71,7 +71,7 @@ No hay base de datos ni estado propio: todo lo que crea la app vive en Procore.
 5. **Valores objetivo:**
    - se leen los ítems con *List Checklist (Inspections) Items* (`filters[list_id]`) y sus secciones con *List Checklist (Inspection) Sections*;
    - se carga cada valor con *Create Checklist Item Response*: `POST /projects/{pid}/checklist/items/{item_id}/item_response`, con cuerpo `{item_response:{number_value|text_value}}`.
-6. **Planificada** (*Create a Checklist (Inspection) Schedule*): `POST /projects/{pid}/checklist/schedules`, con cuerpo `{schedule:{name, private:false, days_created_before_due_date:7, inspection_template_id, first_inspection_due_at:"YYYY-MM-DDT12:00:00Z", ends_at, frequency:"quarterly"}}`.
+6. **Planificada** (*Create a Checklist (Inspection) Schedule*): `POST /projects/{pid}/checklist/schedules`, con cuerpo `{schedule:{name, private:false, days_created_before_due_date:7, inspection_template_id, first_inspection_due_at:"YYYY-MM-DDT12:00:00Z", ends_at:"YYYY-MM-DDT12:00:00Z", frequency:"quarterly"}}`.
    - La primera medición vence **3 meses después** del reporte de hoy, o en la fecha fin si el proyecto termina antes.
    - Se repite cada trimestre hasta la fecha fin del proyecto.
    - Sus ítems no llevan valor.
@@ -253,7 +253,7 @@ Las rutas y los cuerpos se verificaron contra la referencia REST de Procore (ár
 
 | # | Qué falta confirmar | Dónde (`procoreSpec.ts`) | Comportamiento actual |
 | --- | --- | --- | --- |
-| 1 | ~~Valores de `frequency`~~ **Confirmado** por la validación de Procore | `SCHEDULE_FREQUENCY` | `quarterly` (admitidos: once, daily, weekly, once_every_two_weeks, monthly, quarterly, twice_yearly, yearly). También son obligatorios `private` (se envía `false`) y `days_created_before_due_date` (`DAYS_CREATED_BEFORE_DUE_DATE` = 7), y `first_inspection_due_at` debe ser un timestamp |
+| 1 | ~~Valores de `frequency`~~ **Confirmado** por la validación de Procore | `SCHEDULE_FREQUENCY` | `quarterly` (admitidos: once, daily, weekly, once_every_two_weeks, monthly, quarterly, twice_yearly, yearly). También son obligatorios `private` (se envía `false`) y `days_created_before_due_date` (`DAYS_CREATED_BEFORE_DUE_DATE` = 7), y `first_inspection_due_at` y `ends_at` deben ser timestamps |
 | 2 | Valor del campo `type` en *Create Company Inspection Template Item* | `itemTypeCandidates()` | Lee *List Available Checklist Item Types* y prueba los valores cuyo nombre indique número o texto. Si ninguno vale, crea el ítem con el tipo por defecto y lo avisa |
 | 3 | Forma de la respuesta de las creaciones (dónde viene el `id`) | `extractId()` | Acepta `{id}`, `{data:{id}}` u objeto envuelto. Si falta, lo busca por nombre en el listado |
 | 4 | URL web de una plantilla de proyecto | `templateWebUrl()` | `/:pid/project/checklists/list_templates/:id` |

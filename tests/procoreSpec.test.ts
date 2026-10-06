@@ -84,7 +84,7 @@ describe('payload del schedule (planificada trimestral)', () => {
         days_created_before_due_date: 7,
         inspection_template_id: 42,
         first_inspection_due_at: '2027-01-06T12:00:00Z',
-        ends_at: '2027-12-31',
+        ends_at: '2027-12-31T12:00:00Z',
         frequency: 'quarterly',
       },
     });
@@ -104,7 +104,7 @@ describe('payload del schedule (planificada trimestral)', () => {
   });
 
   it('actualización de fecha fin y lectura de ends_at', () => {
-    expect(buildScheduleEndDatePatch('2028-03-31')).toEqual({ schedule: { ends_at: '2028-03-31' } });
+    expect(buildScheduleEndDatePatch('2028-03-31')).toEqual({ schedule: { ends_at: '2028-03-31T12:00:00Z' } });
     expect(extractScheduleEndDate({ ends_at: '2028-03-31T00:00:00Z' })).toBe('2028-03-31');
   });
 });

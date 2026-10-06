@@ -216,7 +216,7 @@ export const SCHEDULE_FREQUENCY = 'quarterly';
 /** Días de antelación con que Procore crea cada inspección antes de su vencimiento (obligatorio). */
 export const DAYS_CREATED_BEFORE_DUE_DATE = 7;
 
-/** `first_inspection_due_at` debe ser un timestamp: se usa el mediodía UTC para no cambiar de día por zona horaria. */
+/** `first_inspection_due_at` y `ends_at` deben ser timestamps: se usa el mediodía UTC para no cambiar de día por zona horaria. */
 export function toScheduleTimestamp(isoDate: string): string {
   return `${isoDate}T12:00:00Z`;
 }
@@ -234,7 +234,7 @@ export class SchedulePayloadError extends Error {}
 /**
  * [Create a Checklist (Inspection) Schedule]
  * schedule*{name, private, days_created_before_due_date, inspection_template_id,
- *           first_inspection_due_at (timestamp), ends_at, frequency}
+ *           first_inspection_due_at (timestamp), ends_at (timestamp), frequency}
  * `private` y `days_created_before_due_date` son obligatorios (respuesta 400 de Procore).
  */
 export function buildSchedulePayload(args: SchedulePayloadArgs): Record<string, unknown> {
@@ -254,15 +254,15 @@ export function buildSchedulePayload(args: SchedulePayloadArgs): Record<string, 
       days_created_before_due_date: DAYS_CREATED_BEFORE_DUE_DATE,
       inspection_template_id: Number(args.templateId),
       first_inspection_due_at: toScheduleTimestamp(first),
-      ends_at: end,
+      ends_at: toScheduleTimestamp(end),
       frequency: SCHEDULE_FREQUENCY,
     },
   };
 }
 
-/** [Update a Checklist (Inspection) Schedule] schedule*{ends_at, …} */
+/** [Update a Checklist (Inspection) Schedule] schedule*{ends_at (timestamp), …} */
 export function buildScheduleEndDatePatch(endDate: string): Record<string, unknown> {
-  return { schedule: { ends_at: endDate } };
+  return { schedule: { ends_at: toScheduleTimestamp(endDate) } };
 }
 
 // ─── Tipos de ítem ────────────────────────────────────────────────────────────
